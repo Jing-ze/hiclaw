@@ -744,6 +744,12 @@ EOF
         log "YOLO mode enabled (autonomous decisions, no interactive prompts)"
     fi
 
+    # Pull images (worker image must be ready before manager creates workers)
+    log "Pulling Manager image: ${MANAGER_IMAGE}"
+    docker pull "${MANAGER_IMAGE}"
+    log "Pulling Worker image: ${WORKER_IMAGE}"
+    docker pull "${WORKER_IMAGE}"
+
     # Run Manager container
     log "Starting Manager container..."
     docker run -d \
