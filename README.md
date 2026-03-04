@@ -45,8 +45,6 @@ That's it. The script asks for your LLM API key, then sets everything up. When i
   Tell the Manager: "Create a Worker named alice for frontend dev"
 ```
 
-![Installation complete](https://img.alicdn.com/imgextra/i2/O1CN01uXyp0Q1Z0y039PC6F_!!6000000003133-2-tps-832-300.png)
-
 **Windows (PowerShell 7+):**
 
 ```powershell
@@ -67,6 +65,8 @@ HICLAW_LLM_API_KEY="sk-xxx" HICLAW_NON_INTERACTIVE=1 bash <(curl -sSL https://hi
 ```
 
 ### After install
+
+![Installation complete](https://img.alicdn.com/imgextra/i2/O1CN01uXyp0Q1Z0y039PC6F_!!6000000003133-2-tps-832-300.png)
 
 1. Open `http://127.0.0.1:18088` in your browser
 2. Login with the credentials shown during install

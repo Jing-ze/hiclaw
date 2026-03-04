@@ -45,8 +45,6 @@ bash <(curl -sSL https://higress.ai/hiclaw/install.sh)
   告诉 Manager："帮我创建一个名为 alice 的前端 Worker"
 ```
 
-![安装完成](https://img.alicdn.com/imgextra/i4/O1CN01PBDwoL1sHQwIBrXEC_!!6000000005741-2-tps-784-294.png)
-
 **Windows（PowerShell 7+）：**
 
 ```powershell
@@ -67,6 +65,8 @@ HICLAW_LLM_API_KEY="sk-xxx" HICLAW_NON_INTERACTIVE=1 bash <(curl -sSL https://hi
 ```
 
 ### 安装完成后
+
+![安装完成](https://img.alicdn.com/imgextra/i4/O1CN01PBDwoL1sHQwIBrXEC_!!6000000005741-2-tps-784-294.png)
 
 1. 浏览器打开 `http://127.0.0.1:18088`
 2. 用安装时显示的账号密码登录
