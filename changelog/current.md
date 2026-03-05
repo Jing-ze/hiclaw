@@ -30,6 +30,8 @@ Record image-affecting changes to `manager/`, `worker/`, `openclaw-base/` here b
 - 修复 Podman 兼容性（硬编码 `docker` 改为运行时检测）、容器内 `jq` 不可用、Tuwunel API 就绪前 Manager 提前初始化的竞态问题。
 - 修复 worker `openclaw.json` 的 `dm.allowFrom` 未包含 admin 账号，导致 admin 无法直接 DM worker 的问题。
 
+---
+
 - feat(manager): add model-switch skill with `update-manager-model.sh` script for runtime model switching ([00cbaa5](https://github.com/higress-group/hiclaw/commit/00cbaa5))
 - feat(manager): add task-management skill (extracted from AGENTS.md) covering task workflow and state file spec ([00cbaa5](https://github.com/higress-group/hiclaw/commit/00cbaa5))
 - feat(manager): add `manager/scripts/lib/builtin-merge.sh` — shared library for idempotent builtin section merging ([00cbaa5](https://github.com/higress-group/hiclaw/commit/00cbaa5))
