@@ -1,0 +1,65 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'design/**'
+      - 'changelog/**'
+      - '**/*.md'
+      - '!tests/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'design/**'
+      - 'changelog/**'
+      - '**/*.md'
+      - '!tests/**'
+  workflow_dispatch:
+
+env:
+  HICLAW_LLM_API_KEY: ${{ secrets.HICLAW_LLM_API_KEY }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images (native arch)
+        run: make build
+
+      - name: Run integration tests
+        run: make test SKIP_BUILD=1
+
+      - name: Collect Manager logs on failure
+        if: failure()
+        run: |
+          echo "### Manager container logs (last 200 lines)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          docker logs hiclaw-manager --tail 200 2>&1 >> $GITHUB_STEP_SUMMARY || echo "(no container)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        run: make uninstall 2>/dev/null || true

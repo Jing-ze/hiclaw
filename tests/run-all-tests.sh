@@ -45,6 +45,9 @@ done
 # When using an existing installation, load credentials from env file
 if [ "${USE_EXISTING}" = true ]; then
     ENV_FILE="${HICLAW_ENV_FILE:-${PROJECT_ROOT}/hiclaw-manager.env}"
+    if [ ! -f "${ENV_FILE}" ] && [ -f "${HOME}/hiclaw-manager.env" ]; then
+        ENV_FILE="${HOME}/hiclaw-manager.env"
+    fi
     if [ -f "${ENV_FILE}" ]; then
         while IFS='=' read -r key value; do
             [[ "${key}" =~ ^#.*$ || -z "${key}" ]] && continue
@@ -60,6 +63,7 @@ if [ "${USE_EXISTING}" = true ]; then
                 HICLAW_MANAGER_GATEWAY_KEY) export TEST_MANAGER_GATEWAY_KEY="${value}" ;;
                 HICLAW_PORT_GATEWAY)     export TEST_GATEWAY_PORT="${value}" ;;
                 HICLAW_PORT_CONSOLE)     export TEST_CONSOLE_PORT="${value}" ;;
+                HICLAW_PORT_ELEMENT_WEB) export TEST_ELEMENT_PORT="${value}" ;;
             esac
         done < "${ENV_FILE}"
     fi

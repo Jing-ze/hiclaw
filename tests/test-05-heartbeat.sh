@@ -45,9 +45,9 @@ log_section "Trigger Heartbeat"
 # Trigger heartbeat manually via openclaw system event
 # This requires access to the Manager container
 log_info "Triggering heartbeat via docker exec..."
-docker exec hiclaw-manager-test bash -c \
+docker exec "${TEST_MANAGER_CONTAINER:-hiclaw-manager}" bash -c \
     "cd ~/hiclaw-fs/agents/manager && openclaw system event --mode now" 2>/dev/null || \
-    log_info "Could not trigger heartbeat via docker exec (container name may differ)"
+    log_info "Could not trigger heartbeat via docker exec"
 
 log_info "Waiting for heartbeat inquiry..."
 sleep 60
@@ -56,7 +56,7 @@ log_section "Verify Heartbeat Inquiry"
 
 # Check for Manager inquiry message in Alice's room
 MESSAGES=$(matrix_read_messages "${ADMIN_TOKEN}" "${DM_ROOM}" 30)
-INQUIRY=$(echo "${MESSAGES}" | jq -r '[.chunk[] | select(.sender | startswith("@manager")) | .content.body] | map(select(test("status|progress|heartbeat|how"; "i"))) | first // empty')
+INQUIRY=$(echo "${MESSAGES}" | jq -r '[.chunk[] | select(.sender | startswith("@manager")) | .content.body // empty | select(. != "") | select(test("status|progress|heartbeat|how"; "i"))] | first // empty')
 
 if [ -n "${INQUIRY}" ]; then
     log_pass "Manager sent heartbeat inquiry"

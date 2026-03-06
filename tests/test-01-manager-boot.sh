@@ -29,7 +29,7 @@ assert_http_code "http://${TEST_MANAGER_HOST}:${TEST_ELEMENT_PORT}/" "200" \
     "Element Web port 8088 is accessible"
 
 # Matrix and MinIO are not exposed to host; verify via docker exec into Manager container
-_MGMT_CTR="${TEST_MANAGER_CONTAINER:-hiclaw-manager-test}"
+_MGMT_CTR="${TEST_MANAGER_CONTAINER:-hiclaw-manager}"
 
 MATRIX_CODE=$(docker exec "${_MGMT_CTR}" curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:6167/_matrix/client/versions" 2>/dev/null || echo "000")

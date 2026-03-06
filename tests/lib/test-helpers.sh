@@ -167,7 +167,7 @@ wait_for_manager_agent_ready() {
     local timeout="${1:-300}"
     local room_id="${2:-}"
     local access_token="${3:-}"
-    local manager_container="${TEST_MANAGER_CONTAINER:-hiclaw-manager-test}"
+    local manager_container="${TEST_MANAGER_CONTAINER:-hiclaw-manager}"
     local manager_user="manager"
     local matrix_domain="${TEST_MATRIX_DOMAIN:-matrix-local.hiclaw.io:${TEST_GATEWAY_PORT}}"
 
