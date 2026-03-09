@@ -23,8 +23,9 @@
 #   HICLAW_WORKSPACE_DIR      Host directory for manager workspace (default: ~/hiclaw-manager)
 #   HICLAW_VERSION            Image tag            (default: latest)
 #   HICLAW_REGISTRY           Image registry       (default: auto-detected by timezone)
-#   HICLAW_INSTALL_MANAGER_IMAGE  Override manager image (e.g., local build)
-#   HICLAW_INSTALL_WORKER_IMAGE   Override worker image  (e.g., local build)
+#   HICLAW_INSTALL_MANAGER_IMAGE       Override manager image (e.g., local build)
+#   HICLAW_INSTALL_WORKER_IMAGE        Override worker image  (e.g., local build)
+#   HICLAW_INSTALL_COPAW_WORKER_IMAGE  Override copaw worker image (e.g., local build)
 #   HICLAW_PORT_GATEWAY       Host port for Higress gateway (default: 18080)
 #   HICLAW_PORT_CONSOLE       Host port for Higress console (default: 18001)
 #   HICLAW_PORT_ELEMENT_WEB   Host port for Element Web direct access (default: 18088)
@@ -395,6 +396,17 @@ msg() {
         "host_share.sharing.en") text="Sharing host directory: %s -> /host-share in container" ;;
         "host_share.not_exist.zh") text="警告: 主机目录 %s 不存在，跳过验证继续使用" ;;
         "host_share.not_exist.en") text="WARNING: Host directory %s does not exist, using without validation" ;;
+        # --- Default worker runtime ---
+        "worker_runtime.title.zh") text="--- 默认 Worker 运行时 ---" ;;
+        "worker_runtime.title.en") text="--- Default Worker Runtime ---" ;;
+        "worker_runtime.openclaw.zh") text="OpenClaw（Node.js 容器，~500MB 内存，功能完整）" ;;
+        "worker_runtime.openclaw.en") text="OpenClaw (Node.js container, ~500MB RAM, full-featured)" ;;
+        "worker_runtime.copaw.zh") text="CoPaw（Python 容器，~100MB 内存，默认关闭控制台，可跟 Manager 对话按需开启）" ;;
+        "worker_runtime.copaw.en") text="CoPaw (Python container, ~100MB RAM, console off by default, enable on demand via Manager)" ;;
+        "worker_runtime.choice.zh") text="请选择 [1/2]" ;;
+        "worker_runtime.choice.en") text="Enter choice [1/2]" ;;
+        "worker_runtime.selected.zh") text="默认 Worker 运行时: %s" ;;
+        "worker_runtime.selected.en") text="Default Worker runtime: %s" ;;
         # --- Secrets and config ---
         "install.generating_secrets.zh") text="正在生成密钥..." ;;
         "install.generating_secrets.en") text="Generating secrets..." ;;
@@ -648,6 +660,7 @@ detect_registry() {
 HICLAW_REGISTRY="${HICLAW_REGISTRY:-$(detect_registry)}"
 MANAGER_IMAGE="${HICLAW_INSTALL_MANAGER_IMAGE:-${HICLAW_REGISTRY}/higress/hiclaw-manager:${HICLAW_VERSION}}"
 WORKER_IMAGE="${HICLAW_INSTALL_WORKER_IMAGE:-${HICLAW_REGISTRY}/higress/hiclaw-worker:${HICLAW_VERSION}}"
+COPAW_WORKER_IMAGE="${HICLAW_INSTALL_COPAW_WORKER_IMAGE:-${HICLAW_REGISTRY}/higress/hiclaw-copaw-worker:${HICLAW_VERSION}}"
 
 # ============================================================
 # Wait for Manager agent to be ready
@@ -1554,6 +1567,26 @@ install_manager() {
     mkdir -p "${HICLAW_WORKSPACE_DIR}"
     log "$(msg workspace.dir_label "${HICLAW_WORKSPACE_DIR}")"
 
+    # Default Worker Runtime
+    log "$(msg worker_runtime.title)"
+    echo ""
+    echo "  1) $(msg worker_runtime.openclaw)"
+    echo "  2) $(msg worker_runtime.copaw)"
+    echo ""
+    if [ "${HICLAW_NON_INTERACTIVE}" = "1" ]; then
+        HICLAW_DEFAULT_WORKER_RUNTIME="${HICLAW_DEFAULT_WORKER_RUNTIME:-openclaw}"
+    elif [ -z "${HICLAW_DEFAULT_WORKER_RUNTIME+x}" ]; then
+        read -p "$(msg worker_runtime.choice): " _runtime_choice
+        _runtime_choice="${_runtime_choice:-1}"
+        case "${_runtime_choice}" in
+            2) HICLAW_DEFAULT_WORKER_RUNTIME="copaw" ;;
+            *) HICLAW_DEFAULT_WORKER_RUNTIME="openclaw" ;;
+        esac
+        unset _runtime_choice
+    fi
+    export HICLAW_DEFAULT_WORKER_RUNTIME
+    log "$(msg worker_runtime.selected "${HICLAW_DEFAULT_WORKER_RUNTIME}")"
+
     log ""
 
     # Generate secrets (only if not already set)
@@ -1611,8 +1644,12 @@ HICLAW_GITHUB_TOKEN=${HICLAW_GITHUB_TOKEN:-}
 # Skills Registry (optional, default: https://skills.sh)
 HICLAW_SKILLS_API_URL=${HICLAW_SKILLS_API_URL:-}
 
-# Worker image (for direct container creation)
+# Worker images (for direct container creation)
 HICLAW_WORKER_IMAGE=${WORKER_IMAGE}
+HICLAW_COPAW_WORKER_IMAGE=${COPAW_WORKER_IMAGE}
+
+# Default Worker runtime (openclaw | copaw)
+HICLAW_DEFAULT_WORKER_RUNTIME=${HICLAW_DEFAULT_WORKER_RUNTIME:-openclaw}
 
 # Higress WASM plugin image registry (auto-selected by timezone)
 HIGRESS_ADMIN_WASM_PLUGIN_IMAGE_REGISTRY=${HICLAW_REGISTRY}
@@ -1709,6 +1746,17 @@ EOF
     else
         log "$(msg install.image.pulling_worker "${WORKER_IMAGE}")"
         ${DOCKER_CMD} pull "${WORKER_IMAGE}"
+    fi
+    if echo "${COPAW_WORKER_IMAGE}" | grep -q "^${LOCAL_IMAGE_PREFIX}"; then
+        if ${DOCKER_CMD} image inspect "${COPAW_WORKER_IMAGE}" >/dev/null 2>&1; then
+            log "Copaw worker image exists: ${COPAW_WORKER_IMAGE}"
+        else
+            log "Pulling copaw worker image: ${COPAW_WORKER_IMAGE}"
+            ${DOCKER_CMD} pull "${COPAW_WORKER_IMAGE}" 2>/dev/null || log "Copaw worker image not available (optional)"
+        fi
+    else
+        log "Pulling copaw worker image: ${COPAW_WORKER_IMAGE}"
+        ${DOCKER_CMD} pull "${COPAW_WORKER_IMAGE}" 2>/dev/null || log "Copaw worker image not available (optional)"
     fi
 
     # Run Manager container

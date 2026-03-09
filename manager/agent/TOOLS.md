@@ -39,14 +39,18 @@ bash /opt/hiclaw/agent/skills/worker-management/scripts/create-worker.sh \
   --skills <skill1>,<skill2>
 ```
 
-### Runtime Selection (MUST check before running create script)
+### Runtime Selection
 
-| Admin says (any of these keywords) | Runtime flag |
-|-------------------------------------|-------------|
-| "copaw", "CoPaw", "Python worker", "pip worker", "host worker" | `--runtime copaw` |
-| "openclaw", "container worker", "docker worker", or **none of the above** | _(default, no flag needed)_ |
+| Runtime | Memory | Description |
+|---------|--------|-------------|
+| `openclaw` | ~500MB | Node.js container, full-featured |
+| `copaw` | ~100MB | Python container, lightweight; console off by default, enable on demand via `enable-worker-console.sh` |
 
-If the admin mentions "copaw" anywhere in the request, always pass `--runtime copaw`.
+Default runtime is set by `HICLAW_DEFAULT_WORKER_RUNTIME` (chosen during installation). Only pass `--runtime` explicitly when:
+- The admin requests a specific runtime (e.g., "create a copaw worker" → `--runtime copaw`)
+- You recommend a specific runtime to solve a problem (see below)
+
+**Local environment access:** If the admin wants the Worker to interact with their local machine (e.g., open a browser, run desktop apps, access local files), recommend `--runtime copaw --remote`. This installs the Worker directly on the admin's machine so it can access the local environment. Ask the admin to confirm before proceeding.
 
 ### Skills Recommendation Table
 
@@ -93,8 +97,9 @@ Run AI coding CLI in a Worker's workspace on their behalf.
 
 Full lifecycle of Worker containers and skill assignments.
 
-- Admin says "create a copaw worker" or "create a copaw named Alice" → use `--runtime copaw` (see Runtime Selection table above)
-- Admin says "create a new Worker named Alice for code review tasks"
+- Admin says "create a copaw worker" or "create a copaw named Alice" → use `--runtime copaw`
+- Admin says "create a new Worker named Alice for code review tasks" → use default runtime (no `--runtime` flag)
+- Admin wants Worker to control their local machine → recommend `--runtime copaw --remote`
 - Before assigning a task, Worker container is `stopped` → wake it up first; `not_found` → tell admin to recreate
 - Admin says "add the github-operations skill to Alice" or "reset the Bob worker"
 

@@ -20,7 +20,7 @@ def _port_remap(url: str, is_container: bool) -> str:
 
 
 def _is_in_container() -> bool:
-    return Path("/.dockerenv").exists()
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
 def _secret_dir(working_dir: Path) -> Path:
