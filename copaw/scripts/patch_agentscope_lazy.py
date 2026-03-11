@@ -420,7 +420,37 @@ def patch(site: Path) -> None:
             )
             fp.write_text(src)
 
-    print("agentscope patched — lazy memory/session/agent/mcp/hooks/numpy")
+    # ------------------------------------------------------------------ #
+    # 10) agent/_react_agent.py — defer rag import (pulls dashscope SDK)
+    # ------------------------------------------------------------------ #
+    ra = site / "agent/_react_agent.py"
+    src = ra.read_text()
+    if "from ..rag import KnowledgeBase, Document\n" in src:
+        src = src.replace(
+            "from ..rag import KnowledgeBase, Document\n",
+            "",
+        )
+        src = src.replace(
+            "knowledge: KnowledgeBase | list[KnowledgeBase] | None = None,",
+            'knowledge: "KnowledgeBase | list[KnowledgeBase] | None" = None,',
+        )
+        src = src.replace(
+            "        if isinstance(knowledge, KnowledgeBase):",
+            "        from ..rag import KnowledgeBase\n"
+            "        if isinstance(knowledge, KnowledgeBase):",
+        )
+        src = src.replace(
+            "        self.knowledge: list[KnowledgeBase] = knowledge or []",
+            "        self.knowledge: list = knowledge or []",
+        )
+        src = src.replace(
+            "            docs: list[Document] = []",
+            "            from ..rag import Document\n"
+            "            docs: list[Document] = []",
+        )
+        ra.write_text(src)
+
+    print("agentscope patched — lazy memory/session/agent/mcp/hooks/numpy/rag")
 
 
 if __name__ == "__main__":

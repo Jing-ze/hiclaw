@@ -26,7 +26,6 @@ def patch(site: Path) -> None:
         textwrap.dedent("""\
             import importlib
 
-            from . import embedding
             from . import enumeration
             from . import schema
             from . import token_counter
@@ -38,7 +37,7 @@ def patch(site: Path) -> None:
             from .service_context import ServiceContext
 
             _LAZY_SUBMODULES = {
-                "file_store", "file_watcher", "flow", "llm",
+                "embedding", "file_store", "file_watcher", "flow", "llm",
                 "op", "service", "vector_store",
             }
             _LAZY_CLASSES = {"Application": ".application"}
@@ -107,6 +106,83 @@ def patch(site: Path) -> None:
                     val = getattr(mod, name)
                     globals()[name] = val
                     return val
+                raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        """)
+    )
+
+    # ------------------------------------------------------------------ #
+    # 2b) core/embedding/__init__.py — lazy-load OpenAI models (pull openai SDK)
+    # ------------------------------------------------------------------ #
+    (site / "core/embedding/__init__.py").write_text(
+        textwrap.dedent("""\
+            \"\"\"embedding\"\"\"
+
+            import importlib
+            from .base_embedding_model import BaseEmbeddingModel
+
+            __all__ = [
+                "BaseEmbeddingModel",
+                "OpenAIEmbeddingModel",
+                "OpenAIEmbeddingModelSync",
+            ]
+
+            _LAZY = {
+                "OpenAIEmbeddingModel": ".openai_embedding_model",
+                "OpenAIEmbeddingModelSync": ".openai_embedding_model_sync",
+            }
+
+            def __getattr__(name):
+                if name in _LAZY:
+                    mod = importlib.import_module(_LAZY[name], __package__)
+                    cls = getattr(mod, name)
+                    globals()[name] = cls
+                    from ..registry_factory import R
+                    if name == "OpenAIEmbeddingModel":
+                        R.embedding_models.register("openai")(cls)
+                    elif name == "OpenAIEmbeddingModelSync":
+                        R.embedding_models.register("openai_sync")(cls)
+                    return cls
+                raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        """)
+    )
+
+    # ------------------------------------------------------------------ #
+    # 2c) core/llm/__init__.py — lazy-load OpenAI LLM models (pull openai SDK)
+    # ------------------------------------------------------------------ #
+    (site / "core/llm/__init__.py").write_text(
+        textwrap.dedent("""\
+            \"\"\"llm\"\"\"
+
+            import importlib
+            from .base_llm import BaseLLM
+            from .lite_llm import LiteLLM
+            from .lite_llm_sync import LiteLLMSync
+            from ..registry_factory import R
+
+            __all__ = [
+                "BaseLLM",
+                "LiteLLM",
+                "LiteLLMSync",
+                "OpenAILLM",
+                "OpenAILLMSync",
+            ]
+
+            R.llms.register("litellm")(LiteLLM)
+            R.llms.register("litellm_sync")(LiteLLMSync)
+
+            _LAZY = {
+                "OpenAILLM": ".openai_llm",
+                "OpenAILLMSync": ".openai_llm_sync",
+            }
+
+            def __getattr__(name):
+                if name in _LAZY:
+                    mod = importlib.import_module(_LAZY[name], __package__)
+                    cls = getattr(mod, name)
+                    globals()[name] = cls
+                    tag = "openai" if name == "OpenAILLM" else "openai_sync"
+                    R.llms.register(tag)(cls)
+                    return cls
                 raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         """)
     )

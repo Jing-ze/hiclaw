@@ -155,7 +155,24 @@ def patch(site: Path) -> None:
 
         runner.write_text(src)
 
-    print("agentscope_runtime patched — lazy engine/deployers/tracing")
+    # ------------------------------------------------------------------ #
+    # 3) engine/schemas/agent_schemas.py — lazy-import openai types
+    #    (saves ~22 MB: openai SDK has 543 modules)
+    # ------------------------------------------------------------------ #
+    schemas = site / "engine/schemas/agent_schemas.py"
+    src = schemas.read_text()
+    if "from openai.types.chat import ChatCompletionChunk\n" in src:
+        src = src.replace(
+            "from openai.types.chat import ChatCompletionChunk\n",
+            "",
+        )
+        src = src.replace(
+            "        chunk: ChatCompletionChunk,",
+            '        chunk: "ChatCompletionChunk",',
+        )
+        schemas.write_text(src)
+
+    print("agentscope_runtime patched — lazy engine/deployers/tracing/openai")
 
 
 if __name__ == "__main__":
