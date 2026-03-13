@@ -132,15 +132,17 @@ if [ -z "${MANAGER_MATRIX_TOKEN}" ]; then
     log "Obtained Manager Matrix token via login"
 fi
 
-if [ -z "${HIGRESS_COOKIE_FILE}" ] || [ ! -s "${HIGRESS_COOKIE_FILE}" ]; then
-    HIGRESS_COOKIE_FILE="/tmp/higress-session-cookie-worker-create"
-    ADMIN_PASSWORD="${HICLAW_ADMIN_PASSWORD:-admin}"
-    curl -sf -o /dev/null -X POST http://127.0.0.1:8001/session/login \
-        -H 'Content-Type: application/json' \
-        -c "${HIGRESS_COOKIE_FILE}" \
-        -d '{"username":"'"${ADMIN_USER}"'","password":"'"${ADMIN_PASSWORD}"'"}' 2>/dev/null \
-        || _fail "Failed to login to Higress Console"
-    log "Obtained Higress session cookie via login"
+if [ "${HICLAW_RUNTIME}" != "cloud-aliyun" ]; then
+    if [ -z "${HIGRESS_COOKIE_FILE}" ] || [ ! -s "${HIGRESS_COOKIE_FILE}" ]; then
+        HIGRESS_COOKIE_FILE="/tmp/higress-session-cookie-worker-create"
+        ADMIN_PASSWORD="${HICLAW_ADMIN_PASSWORD:-admin}"
+        curl -sf -o /dev/null -X POST http://127.0.0.1:8001/session/login \
+            -H 'Content-Type: application/json' \
+            -c "${HIGRESS_COOKIE_FILE}" \
+            -d '{"username":"'"${ADMIN_USER}"'","password":"'"${ADMIN_PASSWORD}"'"}' 2>/dev/null \
+            || _fail "Failed to login to Higress Console"
+        log "Obtained Higress session cookie via login"
+    fi
 fi
 
 # ============================================================
@@ -205,12 +207,13 @@ CREDS
 chmod 600 "${WORKER_CREDS_FILE}"
 
 # ============================================================
-# Step 1b: Create MinIO user with restricted permissions
+# Step 1b: Create storage user with restricted permissions
 # ============================================================
-log "Step 1b: Creating MinIO user for ${WORKER_NAME}..."
-POLICY_NAME="worker-${WORKER_NAME}"
-POLICY_FILE=$(mktemp /tmp/minio-policy-XXXXXX.json)
-cat > "${POLICY_FILE}" <<POLICY
+if [ "${HICLAW_RUNTIME}" != "cloud-aliyun" ]; then
+    log "Step 1b: Creating MinIO user for ${WORKER_NAME}..."
+    POLICY_NAME="worker-${WORKER_NAME}"
+    POLICY_FILE=$(mktemp /tmp/minio-policy-XXXXXX.json)
+    cat > "${POLICY_FILE}" <<POLICY
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -238,12 +241,15 @@ cat > "${POLICY_FILE}" <<POLICY
   ]
 }
 POLICY
-mc admin user add hiclaw "${WORKER_NAME}" "${WORKER_MINIO_PASSWORD}" 2>/dev/null || true
-mc admin policy remove hiclaw "${POLICY_NAME}" 2>/dev/null || true
-mc admin policy create hiclaw "${POLICY_NAME}" "${POLICY_FILE}"
-mc admin policy attach hiclaw "${POLICY_NAME}" --user "${WORKER_NAME}"
-rm -f "${POLICY_FILE}"
-log "  MinIO user ${WORKER_NAME} created with policy ${POLICY_NAME}"
+    mc admin user add hiclaw "${WORKER_NAME}" "${WORKER_MINIO_PASSWORD}" 2>/dev/null || true
+    mc admin policy remove hiclaw "${POLICY_NAME}" 2>/dev/null || true
+    mc admin policy create hiclaw "${POLICY_NAME}" "${POLICY_FILE}"
+    mc admin policy attach hiclaw "${POLICY_NAME}" --user "${WORKER_NAME}"
+    rm -f "${POLICY_FILE}"
+    log "  MinIO user ${WORKER_NAME} created with policy ${POLICY_NAME}"
+else
+    log "Step 1b: Skipped (cloud mode uses RRSA for storage auth)"
+fi
 
 # ============================================================
 # Step 2: Create Matrix Room (3-party)
@@ -285,91 +291,104 @@ fi
 log "  Room created: ${ROOM_ID}"
 
 # ============================================================
-# Step 3: Create Higress Consumer (key-auth)
+# Steps 3-5: Gateway consumer and authorization
 # ============================================================
-log "Step 3: Creating Higress consumer..."
 WORKER_KEY="${WORKER_GATEWAY_KEY}"
-CONSUMER_RESP=$(curl -sf -X POST http://127.0.0.1:8001/v1/consumers \
-    -b "${HIGRESS_COOKIE_FILE}" \
-    -H 'Content-Type: application/json' \
-    -d '{
-        "name": "'"${CONSUMER_NAME}"'",
-        "credentials": [{
-            "type": "key-auth",
-            "source": "BEARER",
-            "values": ["'"${WORKER_KEY}"'"]
-        }]
-    }' 2>/dev/null) || _fail "Failed to create Higress consumer"
-log "  Consumer created: ${CONSUMER_NAME}"
 
-# ============================================================
-# Step 4: Authorize all AI Routes
-# ============================================================
-log "Step 4: Authorizing AI routes..."
-AI_ROUTES=$(curl -sf http://127.0.0.1:8001/v1/ai/routes \
-    -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || _fail "Failed to list AI routes"
-
-ROUTE_NAMES=$(echo "${AI_ROUTES}" | jq -r '.data[]?.name // empty' 2>/dev/null || true)
-for route_name in ${ROUTE_NAMES}; do
-    [ -z "${route_name}" ] && continue
-    ROUTE_RESP=$(curl -sf "http://127.0.0.1:8001/v1/ai/routes/${route_name}" \
-        -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || continue
-    ROUTE=$(echo "${ROUTE_RESP}" | jq '.data // .' 2>/dev/null)
-
-    ALREADY=$(echo "${ROUTE}" | jq -r '.authConfig.allowedConsumers[]? // empty' 2>/dev/null | grep -c "^${CONSUMER_NAME}$" || true)
-    if [ "${ALREADY}" -gt 0 ]; then
-        log "  Route ${route_name}: already authorized"
-        continue
+if [ "${HICLAW_RUNTIME}" = "cloud-aliyun" ]; then
+    # Cloud mode: use AI Gateway API via cloud-worker-api.py
+    log "Step 3: Creating AI Gateway consumer (cloud mode)..."
+    CLOUD_CONSUMER_RESP=$(cloud_create_consumer "${CONSUMER_NAME}" 2>&1) || true
+    WORKER_KEY=$(echo "${CLOUD_CONSUMER_RESP}" | jq -r '.credential // empty' 2>/dev/null)
+    if [ -z "${WORKER_KEY}" ]; then
+        WORKER_KEY="${WORKER_GATEWAY_KEY}"
+        log "  WARNING: Could not extract credential from cloud response, using pre-generated key"
     fi
+    log "  Cloud consumer created: ${CONSUMER_NAME}"
 
-    UPDATED=$(echo "${ROUTE}" | jq --arg c "${CONSUMER_NAME}" '.authConfig.allowedConsumers += [$c]')
-    curl -sf -X PUT "http://127.0.0.1:8001/v1/ai/routes/${route_name}" \
-        -b "${HIGRESS_COOKIE_FILE}" \
-        -H 'Content-Type: application/json' \
-        -d "${UPDATED}" > /dev/null 2>&1 || log "  WARNING: Failed to update route ${route_name}"
-    log "  Route ${route_name}: authorized"
-done
-
-# ============================================================
-# Step 5: Authorize MCP Servers
-# ============================================================
-log "Step 5: Authorizing MCP servers..."
-ALL_MCP_RAW=$(curl -sf http://127.0.0.1:8001/v1/mcpServer \
-    -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || true
-ALL_MCP=$(echo "${ALL_MCP_RAW}" | jq '.data // .' 2>/dev/null || echo "${ALL_MCP_RAW}")
-
-if [ -n "${MCP_SERVERS}" ]; then
+    log "Steps 4-5: AI Gateway route/MCP authorization handled by cloud provider"
     TARGET_MCP_LIST="${MCP_SERVERS}"
 else
-    TARGET_MCP_LIST=$(echo "${ALL_MCP}" | jq -r '.[].name // empty' 2>/dev/null | tr '\n' ',' || true)
-    TARGET_MCP_LIST="${TARGET_MCP_LIST%,}"
-fi
+    # Local mode: use Higress Console REST API
+    log "Step 3: Creating Higress consumer..."
+    CONSUMER_RESP=$(curl -sf -X POST http://127.0.0.1:8001/v1/consumers \
+        -b "${HIGRESS_COOKIE_FILE}" \
+        -H 'Content-Type: application/json' \
+        -d '{
+            "name": "'"${CONSUMER_NAME}"'",
+            "credentials": [{
+                "type": "key-auth",
+                "source": "BEARER",
+                "values": ["'"${WORKER_KEY}"'"]
+            }]
+        }' 2>/dev/null) || _fail "Failed to create Higress consumer"
+    log "  Consumer created: ${CONSUMER_NAME}"
 
-if [ -n "${TARGET_MCP_LIST}" ]; then
-    IFS=',' read -ra MCP_ARR <<< "${TARGET_MCP_LIST}"
-    for mcp_name in "${MCP_ARR[@]}"; do
-        mcp_name=$(echo "${mcp_name}" | tr -d ' ')
-        [ -z "${mcp_name}" ] && continue
+    # Step 4: Authorize all AI Routes
+    log "Step 4: Authorizing AI routes..."
+    AI_ROUTES=$(curl -sf http://127.0.0.1:8001/v1/ai/routes \
+        -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || _fail "Failed to list AI routes"
 
-        EXISTING_CONSUMERS=$(echo "${ALL_MCP}" | jq -r --arg n "${mcp_name}" \
-            '.[] | select(.name == $n) | .consumerAuthInfo.allowedConsumers // [] | .[]' 2>/dev/null || true)
-        CONSUMER_LIST="[\"manager\""
-        for ec in ${EXISTING_CONSUMERS}; do
-            [ "${ec}" = "manager" ] && continue
-            [ "${ec}" = "${CONSUMER_NAME}" ] && continue
-            CONSUMER_LIST="${CONSUMER_LIST},\"${ec}\""
-        done
-        CONSUMER_LIST="${CONSUMER_LIST},\"${CONSUMER_NAME}\"]"
+    ROUTE_NAMES=$(echo "${AI_ROUTES}" | jq -r '.data[]?.name // empty' 2>/dev/null || true)
+    for route_name in ${ROUTE_NAMES}; do
+        [ -z "${route_name}" ] && continue
+        ROUTE_RESP=$(curl -sf "http://127.0.0.1:8001/v1/ai/routes/${route_name}" \
+            -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || continue
+        ROUTE=$(echo "${ROUTE_RESP}" | jq '.data // .' 2>/dev/null)
 
-        curl -sf -X PUT http://127.0.0.1:8001/v1/mcpServer/consumers \
+        ALREADY=$(echo "${ROUTE}" | jq -r '.authConfig.allowedConsumers[]? // empty' 2>/dev/null | grep -c "^${CONSUMER_NAME}$" || true)
+        if [ "${ALREADY}" -gt 0 ]; then
+            log "  Route ${route_name}: already authorized"
+            continue
+        fi
+
+        UPDATED=$(echo "${ROUTE}" | jq --arg c "${CONSUMER_NAME}" '.authConfig.allowedConsumers += [$c]')
+        curl -sf -X PUT "http://127.0.0.1:8001/v1/ai/routes/${route_name}" \
             -b "${HIGRESS_COOKIE_FILE}" \
             -H 'Content-Type: application/json' \
-            -d '{"mcpServerName":"'"${mcp_name}"'","consumers":'"${CONSUMER_LIST}"'}' > /dev/null 2>&1 \
-            || log "  WARNING: Failed to authorize MCP server ${mcp_name}"
-        log "  MCP ${mcp_name}: authorized"
+            -d "${UPDATED}" > /dev/null 2>&1 || log "  WARNING: Failed to update route ${route_name}"
+        log "  Route ${route_name}: authorized"
     done
-else
-    log "  No MCP servers found, skipping"
+
+    # Step 5: Authorize MCP Servers
+    log "Step 5: Authorizing MCP servers..."
+    ALL_MCP_RAW=$(curl -sf http://127.0.0.1:8001/v1/mcpServer \
+        -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || true
+    ALL_MCP=$(echo "${ALL_MCP_RAW}" | jq '.data // .' 2>/dev/null || echo "${ALL_MCP_RAW}")
+
+    if [ -n "${MCP_SERVERS}" ]; then
+        TARGET_MCP_LIST="${MCP_SERVERS}"
+    else
+        TARGET_MCP_LIST=$(echo "${ALL_MCP}" | jq -r '.[].name // empty' 2>/dev/null | tr '\n' ',' || true)
+        TARGET_MCP_LIST="${TARGET_MCP_LIST%,}"
+    fi
+
+    if [ -n "${TARGET_MCP_LIST}" ]; then
+        IFS=',' read -ra MCP_ARR <<< "${TARGET_MCP_LIST}"
+        for mcp_name in "${MCP_ARR[@]}"; do
+            mcp_name=$(echo "${mcp_name}" | tr -d ' ')
+            [ -z "${mcp_name}" ] && continue
+
+            EXISTING_CONSUMERS=$(echo "${ALL_MCP}" | jq -r --arg n "${mcp_name}" \
+                '.[] | select(.name == $n) | .consumerAuthInfo.allowedConsumers // [] | .[]' 2>/dev/null || true)
+            CONSUMER_LIST="[\"manager\""
+            for ec in ${EXISTING_CONSUMERS}; do
+                [ "${ec}" = "manager" ] && continue
+                [ "${ec}" = "${CONSUMER_NAME}" ] && continue
+                CONSUMER_LIST="${CONSUMER_LIST},\"${ec}\""
+            done
+            CONSUMER_LIST="${CONSUMER_LIST},\"${CONSUMER_NAME}\"]"
+
+            curl -sf -X PUT http://127.0.0.1:8001/v1/mcpServer/consumers \
+                -b "${HIGRESS_COOKIE_FILE}" \
+                -H 'Content-Type: application/json' \
+                -d '{"mcpServerName":"'"${mcp_name}"'","consumers":'"${CONSUMER_LIST}"'}' > /dev/null 2>&1 \
+                || log "  WARNING: Failed to authorize MCP server ${mcp_name}"
+            log "  MCP ${mcp_name}: authorized"
+        done
+    else
+        log "  No MCP servers found, skipping"
+    fi
 fi
 
 # ============================================================
@@ -439,7 +458,8 @@ fi
 # ============================================================
 # Step 8: Sync to MinIO
 # ============================================================
-log "Step 8: Syncing to MinIO..."
+log "Step 8: Syncing to storage..."
+ensure_mc_credentials 2>/dev/null || true
 mc mirror "/root/hiclaw-fs/agents/${WORKER_NAME}/" "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/" --overwrite 2>&1 | tail -5
 mc stat "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/SOUL.md" > /dev/null 2>&1 \
     || _fail "SOUL.md not found in MinIO after sync"
@@ -558,8 +578,6 @@ CONTAINER_ID=""
 INSTALL_CMD=""
 WORKER_STATUS="pending_install"
 
-source /opt/hiclaw/scripts/lib/container-api.sh
-
 _build_install_cmd() {
     # copaw workers run on the host, so use the externally-exposed gateway port.
     # openclaw workers run inside a container, so use the internal port 8080.
@@ -615,6 +633,18 @@ _build_extra_env() {
 if [ "${REMOTE_MODE}" = true ]; then
     log "Step 9: Remote mode requested"
     INSTALL_CMD=$(_build_install_cmd)
+elif [ "${HICLAW_RUNTIME}" = "cloud-aliyun" ]; then
+    log "Step 9: Creating Worker via cloud backend (SAE)..."
+    EXTRA_ENV_JSON=$(_build_extra_env)
+    CREATE_OUTPUT=$(worker_backend_create "${WORKER_NAME}" "" "" "${EXTRA_ENV_JSON}" 2>&1) || true
+    if echo "${CREATE_OUTPUT}" | jq -e '.error' > /dev/null 2>&1; then
+        log "  WARNING: Cloud worker creation returned error: ${CREATE_OUTPUT}"
+        WORKER_STATUS="error"
+    else
+        DEPLOY_MODE="cloud"
+        WORKER_STATUS="starting"
+        log "  SAE application created for ${WORKER_NAME}"
+    fi
 elif container_api_available; then
     log "Step 9: Starting Worker container locally (runtime=${WORKER_RUNTIME})..."
     EXTRA_ENV_JSON=$(_build_extra_env)
@@ -626,7 +656,6 @@ elif container_api_available; then
     fi
 
     CONTAINER_ID=$(echo "${CREATE_OUTPUT}" | tail -1)
-    # Extract actual console host port (randomly assigned, may differ from container port)
     CONSOLE_HOST_PORT=$(echo "${CREATE_OUTPUT}" | grep -o 'CONSOLE_HOST_PORT=[0-9]*' | head -1 | cut -d= -f2)
     if [ -n "${CONTAINER_ID}" ] && [ ${#CONTAINER_ID} -ge 12 ]; then
         DEPLOY_MODE="local"

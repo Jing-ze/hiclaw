@@ -154,12 +154,15 @@ _worker_has_any_tasks() {
 
 # ─── Actions ─────────────────────────────────────────────────────────────────
 
-# Sync container status from Docker API into lifecycle file
+# Sync worker status into lifecycle file (Docker or cloud backend)
 action_sync_status() {
     _init_lifecycle_file
 
-    if ! container_api_available; then
-        _log "Container API not available — marking all workers as remote"
+    local backend
+    backend=$(_detect_worker_backend)
+
+    if [ "$backend" = "none" ]; then
+        _log "No worker backend available — marking all workers as remote"
         local workers
         workers=$(_get_all_workers)
         for worker in $workers; do
@@ -179,8 +182,8 @@ action_sync_status() {
     for worker in $workers; do
         _ensure_worker_entry "$worker"
         local status
-        status=$(container_status_worker "$worker")
-        _log "Worker $worker: container_status=$status"
+        status=$(worker_backend_status "$worker")
+        _log "Worker $worker: status=$status (backend=$backend)"
         local tmp
         tmp=$(mktemp)
         jq --arg w "$worker" --arg s "$status" --arg ts "$(_ts)" \
@@ -263,19 +266,21 @@ action_check_idle() {
     done
 }
 
-# Stop a worker container
+# Stop a worker (Docker container or cloud instance)
 action_stop() {
     local worker="$1"
     _init_lifecycle_file
     _ensure_worker_entry "$worker"
 
-    if ! container_api_available; then
-        _log "ERROR: Container API not available"
+    local backend
+    backend=$(_detect_worker_backend)
+    if [ "$backend" = "none" ]; then
+        _log "ERROR: No worker backend available"
         return 1
     fi
 
-    _log "Stopping worker $worker"
-    if container_stop_worker "$worker"; then
+    _log "Stopping worker $worker (backend=$backend)"
+    if worker_backend_stop "$worker"; then
         local tmp
         tmp=$(mktemp)
         jq --arg w "$worker" --arg ts "$(_ts)" \
@@ -290,8 +295,8 @@ action_stop() {
     fi
 }
 
-# Start (wake up) a stopped worker container, or recreate if the container
-# no longer exists (e.g. after Manager upgrade where old containers were removed).
+# Start (wake up) a stopped worker, or recreate if it no longer exists
+# (e.g. after Manager upgrade where old containers were removed).
 action_start() {
     local worker="$1"
     _init_lifecycle_file
@@ -306,33 +311,37 @@ action_start() {
         return 1
     fi
 
-    if ! container_api_available; then
-        _log "ERROR: Container API not available"
+    local backend
+    backend=$(_detect_worker_backend)
+    if [ "$backend" = "none" ]; then
+        _log "ERROR: No worker backend available"
         return 1
     fi
 
     local status
-    status=$(container_status_worker "$worker")
+    status=$(worker_backend_status "$worker")
 
     local ok=false
     if [ "$status" = "not_found" ]; then
-        _log "Worker $worker container not found — recreating"
+        _log "Worker $worker not found — recreating (backend=$backend)"
         local creds_file="/data/worker-creds/${worker}.env"
-        if [ ! -f "$creds_file" ]; then
-            _log "ERROR: No credentials found for $worker ($creds_file missing)"
-            return 1
+        if [ -f "$creds_file" ]; then
+            source "$creds_file"
         fi
-        source "$creds_file"
         local runtime
         runtime=$(jq -r --arg w "$worker" '.workers[$w].runtime // "openclaw"' "$REGISTRY_FILE" 2>/dev/null)
-        if [ "$runtime" = "copaw" ]; then
-            container_create_copaw_worker "$worker" "$worker" "$WORKER_MINIO_PASSWORD" 2>&1 && ok=true
+        if [ "$backend" = "docker" ]; then
+            if [ "$runtime" = "copaw" ]; then
+                container_create_copaw_worker "$worker" "$worker" "${WORKER_MINIO_PASSWORD:-}" 2>&1 && ok=true
+            else
+                container_create_worker "$worker" "$worker" "${WORKER_MINIO_PASSWORD:-}" 2>&1 && ok=true
+            fi
         else
-            container_create_worker "$worker" "$worker" "$WORKER_MINIO_PASSWORD" 2>&1 && ok=true
+            worker_backend_create "$worker" "" "" "[]" 2>&1 && ok=true
         fi
     else
-        _log "Starting worker $worker (status: $status)"
-        container_start_worker "$worker" && ok=true
+        _log "Starting worker $worker (status: $status, backend=$backend)"
+        worker_backend_start "$worker" && ok=true
     fi
 
     if [ "$ok" = true ]; then

@@ -34,8 +34,15 @@ WORKSPACE="${HICLAW_ROOT}/agents/${WORKER_NAME}"
 # ============================================================
 # Step 1: Configure mc alias for centralized file system
 # ============================================================
-log "Configuring mc alias..."
-mc alias set hiclaw "${FS_ENDPOINT}" "${FS_ACCESS_KEY}" "${FS_SECRET_KEY}"
+if [ "${HICLAW_RUNTIME}" = "cloud-aliyun" ]; then
+    log "Configuring mc alias for cloud (RRSA OIDC)..."
+    ensure_mc_credentials
+else
+    log "Configuring mc alias for local MinIO..."
+    mc alias set hiclaw "${FS_ENDPOINT:?HICLAW_FS_ENDPOINT is required}" \
+        "${FS_ACCESS_KEY:?HICLAW_FS_ACCESS_KEY is required}" \
+        "${FS_SECRET_KEY:?HICLAW_FS_SECRET_KEY is required}"
+fi
 
 # ============================================================
 # Step 2: Pull Worker config and shared data from centralized storage
@@ -118,9 +125,9 @@ log "HOME set to ${HOME} (workspace files will be synced to MinIO)"
 # ────────────────────────────────────────────────────────────────────────────
 (
     while true; do
-        # Check for files modified in the last 10 seconds
         CHANGED=$(find "${WORKSPACE}/" -type f -newermt "10 seconds ago" 2>/dev/null | head -1)
         if [ -n "${CHANGED}" ]; then
+            ensure_mc_credentials 2>/dev/null || true
             if ! mc mirror "${WORKSPACE}/" "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/" --overwrite \
                 --exclude "openclaw.json" --exclude "config/mcporter.json" --exclude "mcporter-servers.json" --exclude ".agents/**" \
                 --exclude "credentials/**" \
@@ -140,6 +147,7 @@ log "Local->Remote change-triggered sync started (PID: $!)"
 (
     while true; do
         sleep 300
+        ensure_mc_credentials 2>/dev/null || true
         mc cp "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/openclaw.json" "${WORKSPACE}/openclaw.json" 2>/dev/null || true
         mc cp "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/config/mcporter.json" "${WORKSPACE}/config/mcporter.json" 2>/dev/null || true
         mc mirror "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/skills/" "${WORKSPACE}/skills/" --overwrite 2>/dev/null || true
