@@ -1,0 +1,42 @@
+#!/bin/bash
+# hiclaw-env.sh - Unified environment bootstrap for HiClaw scripts
+#
+# Source this file instead of manually sourcing base.sh + oss-credentials.sh
+# and setting up Matrix/storage variables in every script.
+#
+# Provides:
+#   HICLAW_RUNTIME         — "docker" | "cloud-aliyun" | "none"
+#   HICLAW_MATRIX_SERVER   — Matrix server URL (works in both local and cloud)
+#   HICLAW_STORAGE_BUCKET  — bucket name for mc commands
+#   HICLAW_STORAGE_PREFIX  — "hiclaw/<bucket>" ready for mc paths
+#   ensure_mc_credentials  — callable function (no-op in local mode)
+#
+# Usage:
+#   source /opt/hiclaw/scripts/lib/hiclaw-env.sh
+
+source /opt/hiclaw/scripts/lib/base.sh
+
+# ── Runtime detection ─────────────────────────────────────────────────────────
+if [ -n "${ALIBABA_CLOUD_OIDC_TOKEN_FILE:-}" ] && \
+   [ -f "${ALIBABA_CLOUD_OIDC_TOKEN_FILE:-/nonexistent}" ]; then
+    HICLAW_RUNTIME="cloud-aliyun"
+elif [ -S "${HICLAW_CONTAINER_SOCKET:-/var/run/docker.sock}" ]; then
+    HICLAW_RUNTIME="docker"
+else
+    HICLAW_RUNTIME="none"
+fi
+
+# ── Normalized variables ──────────────────────────────────────────────────────
+# Matrix server: cloud mode uses external NLB address, local uses localhost
+HICLAW_MATRIX_SERVER="${HICLAW_MATRIX_URL:-http://127.0.0.1:6167}"
+
+# Storage: cloud mode uses OSS bucket name, local uses MinIO default
+HICLAW_STORAGE_BUCKET="${HICLAW_OSS_BUCKET:-hiclaw-storage}"
+HICLAW_STORAGE_PREFIX="hiclaw/${HICLAW_STORAGE_BUCKET}"
+
+# ── Credential management ────────────────────────────────────────────────────
+# In cloud mode, provides ensure_mc_credentials() for STS token refresh.
+# In local mode, ensure_mc_credentials() is a no-op.
+source /opt/hiclaw/scripts/lib/oss-credentials.sh 2>/dev/null || true
+
+export HICLAW_RUNTIME HICLAW_MATRIX_SERVER HICLAW_STORAGE_BUCKET HICLAW_STORAGE_PREFIX
