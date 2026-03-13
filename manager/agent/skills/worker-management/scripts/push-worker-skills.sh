@@ -12,7 +12,7 @@
 #   [--no-notify]  Skip Matrix notification
 
 set -e
-source /opt/hiclaw/scripts/lib/base.sh
+source /opt/hiclaw/scripts/lib/hiclaw-env.sh
 
 # ============================================================
 # Parse arguments
@@ -103,7 +103,7 @@ _worker_exists() {
 _push_skill_to_worker() {
     local worker="$1"
     local skill="$2"
-    local skill_dst="hiclaw/hiclaw-storage/agents/${worker}/skills/${skill}/"
+    local skill_dst="${HICLAW_STORAGE_PREFIX}/agents/${worker}/skills/${skill}/"
 
     if [ "${skill}" = "file-sync" ]; then
         # Use runtime-specific file-sync skill
@@ -120,7 +120,7 @@ _push_skill_to_worker() {
             return 1
         fi
         log "  Pushing skill 'file-sync' (runtime=${worker_runtime}) to worker '${worker}'..."
-        mc mirror "${file_sync_src}/" "hiclaw/hiclaw-storage/agents/${worker}/skills/file-sync/" --overwrite \
+        mc mirror "${file_sync_src}/" "${HICLAW_STORAGE_PREFIX}/agents/${worker}/skills/file-sync/" --overwrite \
             2>&1 | tail -3 || {
             log "  WARNING: Failed to push skill 'file-sync' to worker '${worker}'"
             return 1
@@ -169,6 +169,7 @@ _notify_worker() {
         return 0
     fi
 
+    local matrix_url="${HICLAW_MATRIX_SERVER}"
     local msg="@${worker}:${MATRIX_DOMAIN} 我已向你的工作区推送了以下 skills 更新：[${skills_list}]。请使用 file-sync 技能同步最新文件。"
     local worker_id="@${worker}:${MATRIX_DOMAIN}"
 
@@ -176,7 +177,7 @@ _notify_worker() {
     txn_id="pws-$(date +%s%N)"
 
     curl -sf -X PUT \
-        "http://127.0.0.1:6167/_matrix/client/v3/rooms/${room_id}/send/m.room.message/${txn_id}" \
+        "${matrix_url}/_matrix/client/v3/rooms/${room_id}/send/m.room.message/${txn_id}" \
         -H "Authorization: Bearer ${token}" \
         -H 'Content-Type: application/json' \
         -d "{\"msgtype\":\"m.text\",\"body\":\"${msg}\",\"m.mentions\":{\"user_ids\":[\"${worker_id}\"]}}" \
@@ -226,7 +227,7 @@ if [ -n "${REMOVE_SKILL}" ] && [ -n "${WORKER_NAME}" ]; then
     _save_registry "${REGISTRY}"
     log "Removed skill '${REMOVE_SKILL}' from worker '${WORKER_NAME}'"
     log "Note: Skill files remain in worker's MinIO workspace until manually removed"
-    log "  mc rm --recursive --force hiclaw/hiclaw-storage/agents/${WORKER_NAME}/skills/${REMOVE_SKILL}/"
+    log "  mc rm --recursive --force ${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/skills/${REMOVE_SKILL}/"
     exit 0
 fi
 

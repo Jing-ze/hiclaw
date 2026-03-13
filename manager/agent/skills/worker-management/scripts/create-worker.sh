@@ -15,7 +15,8 @@
 #     MANAGER_MATRIX_TOKEN
 
 set -e
-source /opt/hiclaw/scripts/lib/base.sh
+source /opt/hiclaw/scripts/lib/hiclaw-env.sh
+source /opt/hiclaw/scripts/lib/container-api.sh
 
 # ============================================================
 # Parse arguments
@@ -121,7 +122,7 @@ if [ -z "${MANAGER_MATRIX_TOKEN}" ]; then
     if [ -z "${MANAGER_PASSWORD}" ]; then
         _fail "MANAGER_MATRIX_TOKEN not set and HICLAW_MANAGER_PASSWORD not available"
     fi
-    MANAGER_MATRIX_TOKEN=$(curl -sf -X POST http://127.0.0.1:6167/_matrix/client/v3/login \
+    MANAGER_MATRIX_TOKEN=$(curl -sf -X POST ${HICLAW_MATRIX_SERVER}/_matrix/client/v3/login \
         -H 'Content-Type: application/json' \
         -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"manager"},"password":"'"${MANAGER_PASSWORD}"'"}' \
         2>/dev/null | jq -r '.access_token // empty')
@@ -159,7 +160,7 @@ else
 fi
 [ -z "${WORKER_MINIO_PASSWORD}" ] && WORKER_MINIO_PASSWORD=$(generateKey 24)
 
-REG_RESP=$(curl -s -X POST http://127.0.0.1:6167/_matrix/client/v3/register \
+REG_RESP=$(curl -s -X POST ${HICLAW_MATRIX_SERVER}/_matrix/client/v3/register \
     -H 'Content-Type: application/json' \
     -d '{
         "username": "'"${WORKER_NAME}"'",
@@ -176,7 +177,7 @@ if echo "${REG_RESP}" | jq -e '.access_token' > /dev/null 2>&1; then
 else
     # Account already exists — login with persisted password
     log "  Account exists, logging in..."
-    LOGIN_RESP=$(curl -s -X POST http://127.0.0.1:6167/_matrix/client/v3/login \
+    LOGIN_RESP=$(curl -s -X POST ${HICLAW_MATRIX_SERVER}/_matrix/client/v3/login \
         -H 'Content-Type: application/json' \
         -d '{
             "type": "m.login.password",
@@ -257,7 +258,7 @@ if [ "${HICLAW_MATRIX_E2EE:-0}" = "1" ] || [ "${HICLAW_MATRIX_E2EE:-}" = "true" 
     log "  E2EE enabled: adding m.room.encryption to room initial_state"
 fi
 
-ROOM_RESP=$(curl -sf -X POST http://127.0.0.1:6167/_matrix/client/v3/createRoom \
+ROOM_RESP=$(curl -sf -X POST ${HICLAW_MATRIX_SERVER}/_matrix/client/v3/createRoom \
     -H "Authorization: Bearer ${MANAGER_MATRIX_TOKEN}" \
     -H 'Content-Type: application/json' \
     -d '{
@@ -439,10 +440,10 @@ fi
 # Step 8: Sync to MinIO
 # ============================================================
 log "Step 8: Syncing to MinIO..."
-mc mirror "/root/hiclaw-fs/agents/${WORKER_NAME}/" "hiclaw/hiclaw-storage/agents/${WORKER_NAME}/" --overwrite 2>&1 | tail -5
-mc stat "hiclaw/hiclaw-storage/agents/${WORKER_NAME}/SOUL.md" > /dev/null 2>&1 \
+mc mirror "/root/hiclaw-fs/agents/${WORKER_NAME}/" "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/" --overwrite 2>&1 | tail -5
+mc stat "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/SOUL.md" > /dev/null 2>&1 \
     || _fail "SOUL.md not found in MinIO after sync"
-mc stat "hiclaw/hiclaw-storage/agents/${WORKER_NAME}/openclaw.json" > /dev/null 2>&1 \
+mc stat "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/openclaw.json" > /dev/null 2>&1 \
     || _fail "openclaw.json not found in MinIO after sync"
 
 # Write Matrix password directly to MinIO (never touches Worker's local filesystem)
@@ -469,14 +470,14 @@ if [ -d "${WORKER_AGENT_SRC}" ]; then
     log "  Merging AGENTS.md (runtime=${WORKER_RUNTIME}) to worker MinIO..."
     source /opt/hiclaw/scripts/lib/builtin-merge.sh
     update_builtin_section_minio \
-        "hiclaw/hiclaw-storage/agents/${WORKER_NAME}/AGENTS.md" \
+        "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/AGENTS.md" \
         "${WORKER_AGENT_SRC}/AGENTS.md" \
         || log "  WARNING: Failed to merge AGENTS.md"
     
     if [ -d "${FILESYNC_SRC}" ]; then
         log "  Pushing file-sync skill (${WORKER_RUNTIME}) to worker MinIO..."
         mc mirror "${FILESYNC_SRC}/" \
-            "hiclaw/hiclaw-storage/agents/${WORKER_NAME}/skills/file-sync/" --overwrite \
+            "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/skills/file-sync/" --overwrite \
             || log "  WARNING: Failed to push file-sync skill"
         log "  Worker agent files pushed"
     else

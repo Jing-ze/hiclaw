@@ -8,7 +8,7 @@
 # Output: /root/hiclaw-fs/agents/<WORKER_NAME>/openclaw.json
 
 set -e
-source /opt/hiclaw/scripts/lib/base.sh
+source /opt/hiclaw/scripts/lib/hiclaw-env.sh
 
 WORKER_NAME="$1"
 WORKER_MATRIX_TOKEN="$2"
