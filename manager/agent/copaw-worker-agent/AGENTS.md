@@ -126,9 +126,12 @@ You MUST @mention Manager (using the full domain from `echo $HICLAW_MATRIX_DOMAI
 | Blocked — need help | `@manager:matrix-local.hiclaw.io:18080 BLOCKED: <what's blocking you>` |
 | Need clarification | `@manager:matrix-local.hiclaw.io:18080 QUESTION: <your question>` |
 | Replying to Manager's message | `@manager:matrix-local.hiclaw.io:18080 <your reply>` |
+| Manager asks about progress | `@manager:matrix-local.hiclaw.io:18080 <progress update>` |
 | Critical info for another Worker | `@worker-name:matrix-local.hiclaw.io:18080 <info>` |
 
-**Phase completion reports MUST always @mention Manager** — this is what triggers the Manager to proceed to the next phase. A completion message without @mention is silently dropped and the workflow stalls.
+**Task completion reports MUST always @mention Manager** — this is what triggers the Manager to update task status. A completion message without @mention is silently dropped and the workflow stalls.
+
+**When the Manager asks about your progress**, you MUST @mention Manager in your reply. A progress reply without @mention is silently dropped — the Manager never receives it, causing the task status to appear stale.
 
 Mid-task progress updates (informational only, no action needed from Manager) do not need @mention:
 ```
