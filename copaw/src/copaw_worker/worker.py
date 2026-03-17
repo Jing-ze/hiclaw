@@ -282,7 +282,10 @@ class Worker:
 
         matrix_password = matrix_password.strip()
         matrix_cfg = openclaw_cfg.get("channels", {}).get("matrix", {})
-        homeserver = matrix_cfg.get("homeserver", "")
+        from .bridge import _port_remap, _is_in_container
+        homeserver = _port_remap(
+            matrix_cfg.get("homeserver", ""), _is_in_container()
+        )
 
         if not homeserver or not matrix_password:
             return openclaw_cfg
