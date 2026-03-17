@@ -37,6 +37,7 @@ do_build() {
     log "Building worker: ${WORKER_IMAGE}"
     docker build \
         --build-arg OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE}" \
+        --build-context shared=./shared/lib \
         -t "${WORKER_IMAGE}" \
         ./worker/
 

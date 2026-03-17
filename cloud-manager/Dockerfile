@@ -43,7 +43,8 @@ ENV PATH="/opt/openclaw/packages/clawdbot/node_modules/.bin:${PATH}"
 COPY manager/agent/ /opt/hiclaw/agent/
 COPY manager/configs/ /opt/hiclaw/configs/
 
-# ---- Copy shared libraries ----
+# ---- Copy shared libraries (shared first, then manager-only overlays) ----
+COPY shared/lib/ /opt/hiclaw/scripts/lib/
 COPY manager/scripts/lib/ /opt/hiclaw/scripts/lib/
 
 # ---- Copy cloud entrypoint and configs ----

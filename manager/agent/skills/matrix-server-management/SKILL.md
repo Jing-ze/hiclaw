@@ -7,14 +7,14 @@ description: Manage the Tuwunel Matrix Homeserver (register users, create rooms,
 
 ## Overview
 
-This skill allows you to manage the Tuwunel Matrix Homeserver. In local deployment, Tuwunel runs at `http://127.0.0.1:6167`. In cloud deployment (SAE), use the `${HICLAW_MATRIX_SERVER}` environment variable to get the actual Matrix server address.
+This skill allows you to manage the Tuwunel Matrix Homeserver at `${HICLAW_MATRIX_SERVER}`.
 
-**Determine the Matrix server URL at runtime:**
+**Set the Matrix server URL at the top of your scripts:**
 ```bash
 MATRIX_URL="${HICLAW_MATRIX_SERVER:-http://127.0.0.1:6167}"
 ```
 
-Use `${MATRIX_URL}` in all API calls below instead of hardcoded addresses.
+Use `${MATRIX_URL}` in all API calls below.
 
 ## Environment Variables
 
@@ -208,5 +208,5 @@ curl -s "${MATRIX_URL}/_matrix/client/v3/rooms/<ROOM_ID>/messages?dir=b&limit=20
 - **Server name**: Set in `CONDUWUIT_SERVER_NAME`, usually `${HICLAW_MATRIX_DOMAIN}`
 - **User ID format**: `@<username>:${HICLAW_MATRIX_DOMAIN}`
 - **Registration token**: Stored in `HICLAW_REGISTRATION_TOKEN` env var
-- **Direct access**: In local mode, use `http://127.0.0.1:6167` directly. In cloud mode, use `${HICLAW_MATRIX_SERVER}`. Always prefer the `MATRIX_URL` variable defined at the top of this document.
+- **Direct access**: Always use the `MATRIX_URL` variable defined at the top of this document.
 

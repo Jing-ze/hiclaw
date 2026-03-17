@@ -52,6 +52,7 @@ ENV OPENCLAW_CONFIG_PATH="/root/manager-workspace/openclaw.json"
 # ---- Copy HiClaw configuration and scripts ----
 # Our supervisord.conf replaces the Higress one; our scripts handle all components
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY --from=shared . /opt/hiclaw/scripts/lib/
 COPY scripts/ /opt/hiclaw/scripts/
 
 # Install systemctl shim so 'openclaw gateway restart' works without systemd

@@ -1,11 +1,11 @@
 #!/bin/bash
 # hiclaw-env.sh - Unified environment bootstrap for HiClaw scripts
 #
-# Source this file instead of manually sourcing base.sh + oss-credentials.sh
-# and setting up Matrix/storage variables in every script.
+# Single source of truth for both Manager and Worker containers.
+# Source this file instead of manually setting up Matrix/storage variables.
 #
 # Provides:
-#   HICLAW_RUNTIME         — "docker" | "cloud-aliyun" | "none"
+#   HICLAW_RUNTIME         — "cloud-aliyun" | "docker" | "none"
 #   HICLAW_MATRIX_SERVER   — Matrix server URL (works in both local and cloud)
 #   HICLAW_STORAGE_BUCKET  — bucket name for mc commands
 #   HICLAW_STORAGE_PREFIX  — "hiclaw/<bucket>" ready for mc paths
@@ -14,7 +14,10 @@
 # Usage:
 #   source /opt/hiclaw/scripts/lib/hiclaw-env.sh
 
-source /opt/hiclaw/scripts/lib/base.sh
+# ── Optional dependencies ─────────────────────────────────────────────────────
+# base.sh provides log(), waitForService(), generateKey() — Manager-only.
+# Worker images don't ship base.sh; the silent fallback is intentional.
+source /opt/hiclaw/scripts/lib/base.sh 2>/dev/null || true
 
 # ── Runtime detection ─────────────────────────────────────────────────────────
 if [ -n "${ALIBABA_CLOUD_OIDC_TOKEN_FILE:-}" ] && \

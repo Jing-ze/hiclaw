@@ -608,9 +608,7 @@ worker_backend_create() {
         cloud-aliyun)
             local envs_obj="{}"
             if [ "${extra_env_json}" != "[]" ] && [ -n "${extra_env_json}" ]; then
-                envs_obj=$(echo "${extra_env_json}" | jq -r '.[]' 2>/dev/null | while IFS='=' read -r k v; do
-                    echo "${k}=${v}"
-                done | jq -R 'split("=") | {(.[0]): .[1:] | join("=")}' | jq -s 'add // {}' | jq -s --argjson base "${envs_obj}" '$base + .[0]')
+                envs_obj=$(echo "${extra_env_json}" | jq '[.[] | split("=") | {(.[0]): (.[1:] | join("="))}] | add // {}')
             fi
             sae_create_worker "${worker_name}" "${envs_obj}"
             ;;

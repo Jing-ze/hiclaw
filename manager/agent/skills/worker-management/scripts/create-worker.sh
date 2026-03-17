@@ -17,6 +17,7 @@
 set -e
 source /opt/hiclaw/scripts/lib/hiclaw-env.sh
 source /opt/hiclaw/scripts/lib/container-api.sh
+source /opt/hiclaw/scripts/lib/gateway-api.sh
 
 # Override log() to also write to container's main stdout (/proc/1/fd/1)
 # so that logs are visible in `docker logs` / SAE log viewer even when
@@ -144,18 +145,7 @@ if [ -z "${MANAGER_MATRIX_TOKEN}" ]; then
     log "Obtained Manager Matrix token via login"
 fi
 
-if [ "${HICLAW_RUNTIME}" != "cloud-aliyun" ]; then
-    if [ -z "${HIGRESS_COOKIE_FILE}" ] || [ ! -s "${HIGRESS_COOKIE_FILE}" ]; then
-        HIGRESS_COOKIE_FILE="/tmp/higress-session-cookie-worker-create"
-        ADMIN_PASSWORD="${HICLAW_ADMIN_PASSWORD:-admin}"
-        curl -sf -o /dev/null -X POST http://127.0.0.1:8001/session/login \
-            -H 'Content-Type: application/json' \
-            -c "${HIGRESS_COOKIE_FILE}" \
-            -d '{"username":"'"${ADMIN_USER}"'","password":"'"${ADMIN_PASSWORD}"'"}' 2>/dev/null \
-            || _fail "Failed to login to Higress Console"
-        log "Obtained Higress session cookie via login"
-    fi
-fi
+gateway_ensure_session || _fail "Failed to establish gateway session"
 
 # ============================================================
 # Step 1: Register Matrix Account
@@ -307,125 +297,30 @@ log "  Room created: ${ROOM_ID}"
 # ============================================================
 WORKER_KEY="${WORKER_GATEWAY_KEY}"
 
-if [ "${HICLAW_RUNTIME}" = "cloud-aliyun" ]; then
-    # Cloud mode: use AI Gateway API via cloud-worker-api.py
-    log "Step 3: Creating AI Gateway consumer (cloud mode)..."
-    CLOUD_CONSUMER_RESP=$(cloud_create_consumer "${CONSUMER_NAME}" 2>/dev/null) || true
-    log "  Consumer API response: ${CLOUD_CONSUMER_RESP:0:300}"
-    CONSUMER_STATUS=$(echo "${CLOUD_CONSUMER_RESP}" | jq -r '.status // "error"' 2>/dev/null)
-    if [ "${CONSUMER_STATUS}" = "created" ] || [ "${CONSUMER_STATUS}" = "exists" ]; then
-        GW_API_KEY=$(echo "${CLOUD_CONSUMER_RESP}" | jq -r '.api_key // empty' 2>/dev/null)
-        if [ -n "${GW_API_KEY}" ]; then
-            WORKER_KEY="${GW_API_KEY}"
-            WORKER_GATEWAY_KEY="${GW_API_KEY}"
-            log "  Consumer ready: ${CONSUMER_NAME} (key prefix: ${WORKER_KEY:0:8}...)"
-        else
-            log "  Consumer ready: ${CONSUMER_NAME} (using pre-generated key)"
-        fi
-    else
-        log "  WARNING: Consumer creation returned: ${CLOUD_CONSUMER_RESP}"
-        _fail "AI Gateway consumer creation failed for ${CONSUMER_NAME}. Cannot proceed without a valid consumer."
-    fi
+log "Step 3: Creating gateway consumer..."
+CONSUMER_RESULT=$(gateway_create_consumer "${CONSUMER_NAME}" "${WORKER_KEY}") \
+    || _fail "Gateway consumer creation failed for ${CONSUMER_NAME}"
+log "  Consumer result: ${CONSUMER_RESULT}"
 
-    # Bind consumer to model API if env vars are set
-    CONSUMER_ID=$(echo "${CLOUD_CONSUMER_RESP}" | jq -r '.consumer_id // empty' 2>/dev/null)
-    if [ -n "${CONSUMER_ID}" ] && [ -n "${HICLAW_GW_MODEL_API_ID:-}" ] && [ -n "${HICLAW_GW_ENV_ID:-}" ]; then
-        log "Step 4: Binding consumer to model API (cloud mode)..."
-        log "  consumer_id=${CONSUMER_ID}, api_id=${HICLAW_GW_MODEL_API_ID}, env_id=${HICLAW_GW_ENV_ID}"
-        BIND_RESULT=$(cloud_bind_consumer "${CONSUMER_ID}" "${HICLAW_GW_MODEL_API_ID}" "${HICLAW_GW_ENV_ID}" 2>/dev/null) || true
-        log "  Bind response: ${BIND_RESULT:0:200}"
-    else
-        skip_reason=""
-        [ -z "${CONSUMER_ID}" ] && skip_reason="CONSUMER_ID empty"
-        [ -z "${HICLAW_GW_MODEL_API_ID:-}" ] && skip_reason="${skip_reason:+${skip_reason}, }HICLAW_GW_MODEL_API_ID not set"
-        [ -z "${HICLAW_GW_ENV_ID:-}" ] && skip_reason="${skip_reason:+${skip_reason}, }HICLAW_GW_ENV_ID not set"
-        log "Step 4: Skipping API binding (${skip_reason})"
-    fi
-
-    log "Step 5: MCP server authorization (cloud mode — managed via AI Gateway console)"
-    TARGET_MCP_LIST="${MCP_SERVERS}"
-else
-    # Local mode: use Higress Console REST API
-    log "Step 3: Creating Higress consumer..."
-    CONSUMER_RESP=$(curl -sf -X POST http://127.0.0.1:8001/v1/consumers \
-        -b "${HIGRESS_COOKIE_FILE}" \
-        -H 'Content-Type: application/json' \
-        -d '{
-            "name": "'"${CONSUMER_NAME}"'",
-            "credentials": [{
-                "type": "key-auth",
-                "source": "BEARER",
-                "values": ["'"${WORKER_KEY}"'"]
-            }]
-        }' 2>/dev/null) || _fail "Failed to create Higress consumer"
-    log "  Consumer created: ${CONSUMER_NAME}"
-
-    # Step 4: Authorize all AI Routes
-    log "Step 4: Authorizing AI routes..."
-    AI_ROUTES=$(curl -sf http://127.0.0.1:8001/v1/ai/routes \
-        -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || _fail "Failed to list AI routes"
-
-    ROUTE_NAMES=$(echo "${AI_ROUTES}" | jq -r '.data[]?.name // empty' 2>/dev/null || true)
-    for route_name in ${ROUTE_NAMES}; do
-        [ -z "${route_name}" ] && continue
-        ROUTE_RESP=$(curl -sf "http://127.0.0.1:8001/v1/ai/routes/${route_name}" \
-            -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || continue
-        ROUTE=$(echo "${ROUTE_RESP}" | jq '.data // .' 2>/dev/null)
-
-        ALREADY=$(echo "${ROUTE}" | jq -r '.authConfig.allowedConsumers[]? // empty' 2>/dev/null | grep -c "^${CONSUMER_NAME}$" || true)
-        if [ "${ALREADY}" -gt 0 ]; then
-            log "  Route ${route_name}: already authorized"
-            continue
-        fi
-
-        UPDATED=$(echo "${ROUTE}" | jq --arg c "${CONSUMER_NAME}" '.authConfig.allowedConsumers += [$c]')
-        curl -sf -X PUT "http://127.0.0.1:8001/v1/ai/routes/${route_name}" \
-            -b "${HIGRESS_COOKIE_FILE}" \
-            -H 'Content-Type: application/json' \
-            -d "${UPDATED}" > /dev/null 2>&1 || log "  WARNING: Failed to update route ${route_name}"
-        log "  Route ${route_name}: authorized"
-    done
-
-    # Step 5: Authorize MCP Servers
-    log "Step 5: Authorizing MCP servers..."
-    ALL_MCP_RAW=$(curl -sf http://127.0.0.1:8001/v1/mcpServer \
-        -b "${HIGRESS_COOKIE_FILE}" 2>/dev/null) || true
-    ALL_MCP=$(echo "${ALL_MCP_RAW}" | jq '.data // .' 2>/dev/null || echo "${ALL_MCP_RAW}")
-
-    if [ -n "${MCP_SERVERS}" ]; then
-        TARGET_MCP_LIST="${MCP_SERVERS}"
-    else
-        TARGET_MCP_LIST=$(echo "${ALL_MCP}" | jq -r '.[].name // empty' 2>/dev/null | tr '\n' ',' || true)
-        TARGET_MCP_LIST="${TARGET_MCP_LIST%,}"
-    fi
-
-    if [ -n "${TARGET_MCP_LIST}" ]; then
-        IFS=',' read -ra MCP_ARR <<< "${TARGET_MCP_LIST}"
-        for mcp_name in "${MCP_ARR[@]}"; do
-            mcp_name=$(echo "${mcp_name}" | tr -d ' ')
-            [ -z "${mcp_name}" ] && continue
-
-            EXISTING_CONSUMERS=$(echo "${ALL_MCP}" | jq -r --arg n "${mcp_name}" \
-                '.[] | select(.name == $n) | .consumerAuthInfo.allowedConsumers // [] | .[]' 2>/dev/null || true)
-            CONSUMER_LIST="[\"manager\""
-            for ec in ${EXISTING_CONSUMERS}; do
-                [ "${ec}" = "manager" ] && continue
-                [ "${ec}" = "${CONSUMER_NAME}" ] && continue
-                CONSUMER_LIST="${CONSUMER_LIST},\"${ec}\""
-            done
-            CONSUMER_LIST="${CONSUMER_LIST},\"${CONSUMER_NAME}\"]"
-
-            curl -sf -X PUT http://127.0.0.1:8001/v1/mcpServer/consumers \
-                -b "${HIGRESS_COOKIE_FILE}" \
-                -H 'Content-Type: application/json' \
-                -d '{"mcpServerName":"'"${mcp_name}"'","consumers":'"${CONSUMER_LIST}"'}' > /dev/null 2>&1 \
-                || log "  WARNING: Failed to authorize MCP server ${mcp_name}"
-            log "  MCP ${mcp_name}: authorized"
-        done
-    else
-        log "  No MCP servers found, skipping"
-    fi
+# Cloud backend may return a platform-assigned API key — use it if present
+GW_API_KEY=$(echo "${CONSUMER_RESULT}" | jq -r '.api_key // empty' 2>/dev/null)
+if [ -n "${GW_API_KEY}" ] && [ "${GW_API_KEY}" != "${WORKER_KEY}" ]; then
+    WORKER_KEY="${GW_API_KEY}"
+    WORKER_GATEWAY_KEY="${GW_API_KEY}"
+    log "  Using platform-assigned API key (prefix: ${WORKER_KEY:0:8}...)"
 fi
+
+# Pass consumer_id to gateway_authorize_routes (used by cloud backend)
+GATEWAY_CONSUMER_ID=$(echo "${CONSUMER_RESULT}" | jq -r '.consumer_id // empty' 2>/dev/null)
+export GATEWAY_CONSUMER_ID
+
+log "Step 4: Authorizing AI routes..."
+gateway_authorize_routes "${CONSUMER_NAME}"
+log "  Routes authorized"
+
+log "Step 5: Authorizing MCP servers..."
+gateway_authorize_mcp "${CONSUMER_NAME}" "${MCP_SERVERS}"
+log "  MCP authorization complete"
 
 # ============================================================
 # Step 6: Generate openclaw.json

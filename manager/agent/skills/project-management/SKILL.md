@@ -100,7 +100,7 @@ Wait for human confirmation before proceeding.
 2. Sync to MinIO: `mc mirror /root/hiclaw-fs/shared/projects/${PROJECT_ID}/ hiclaw/hiclaw-storage/shared/projects/${PROJECT_ID}/ --overwrite`
 3. Verify the human admin is in the project room — if not, invite them immediately:
    ```bash
-   curl -X POST "http://127.0.0.1:6167/_matrix/client/v3/rooms/${ROOM_ID}/invite" \
+   curl -X POST "${HICLAW_MATRIX_SERVER}/_matrix/client/v3/rooms/${ROOM_ID}/invite" \
      -H "Authorization: Bearer ${MANAGER_MATRIX_TOKEN}" \
      -H 'Content-Type: application/json' \
      -d "{\"user_id\": \"@${HICLAW_ADMIN_USER}:${HICLAW_MATRIX_DOMAIN}\"}"
@@ -546,7 +546,7 @@ When a new Worker joins a project after it has started:
 ### 6a. Add Worker to project room
 
 ```bash
-curl -X POST "http://127.0.0.1:6167/_matrix/client/v3/rooms/${ROOM_ID}/invite" \
+curl -X POST "${HICLAW_MATRIX_SERVER}/_matrix/client/v3/rooms/${ROOM_ID}/invite" \
   -H "Authorization: Bearer ${MANAGER_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{"user_id": "@<new-worker>:<matrix_domain>"}'
