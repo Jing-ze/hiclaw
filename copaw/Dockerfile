@@ -39,7 +39,6 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
         libolm-dev \
         libjemalloc2 \
         curl \
-        git \
         gettext-base \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
@@ -100,9 +99,6 @@ RUN SITE=/opt/venv/lite/lib/python3.11/site-packages \
     && rm /tmp/patch_*_lazy.py
 
 RUN rm -rf /tmp/copaw-worker/ /tmp/lite-copaw/
-
-# Shared libraries (render-skills.sh, hiclaw-env.sh)
-COPY --from=shared . /opt/hiclaw/scripts/lib/
 
 # copaw-sync wrapper
 RUN printf '#!/bin/bash\nexec python3 "/root/.copaw-worker/${HICLAW_WORKER_NAME}/skills/file-sync/scripts/copaw-sync.py" "$@"\n' \

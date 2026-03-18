@@ -24,8 +24,4 @@ mc mirror "${HICLAW_STORAGE_PREFIX}/shared/" "${HICLAW_ROOT}/shared/" --overwrit
 # Restore +x on scripts (MinIO does not preserve Unix permission bits)
 find "${WORKSPACE}/skills" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
 
-# Re-render doc templates after pulling new files from MinIO
-bash /opt/hiclaw/scripts/lib/render-skills.sh "${WORKSPACE}/skills" 2>/dev/null || true
-bash /opt/hiclaw/scripts/lib/render-skills.sh "${WORKSPACE}" AGENTS.md 2>/dev/null || true
-
 echo "Config sync completed at $(date)"
