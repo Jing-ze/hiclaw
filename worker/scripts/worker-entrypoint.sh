@@ -102,6 +102,14 @@ printf '#!/bin/bash\nexec /bin/sh "%s/skills/file-sync/scripts/hiclaw-sync.sh" "
     "${WORKSPACE}" > /usr/local/bin/hiclaw-sync
 chmod +x /usr/local/bin/hiclaw-sync
 
+# Defensive symlink: /opt/hiclaw/agent/skills -> actual skills directory
+mkdir -p /opt/hiclaw/agent
+ln -sfn "${WORKSPACE}/skills" /opt/hiclaw/agent/skills
+
+# Render agent doc templates: replace ${VAR} with actual values
+bash /opt/hiclaw/scripts/lib/render-skills.sh "${WORKSPACE}/skills"
+bash /opt/hiclaw/scripts/lib/render-skills.sh "${WORKSPACE}" AGENTS.md
+
 log "HOME set to ${HOME} (workspace files will be synced to MinIO)"
 
 # ============================================================
@@ -152,6 +160,7 @@ log "Local->Remote change-triggered sync started (PID: $!)"
         mc cp "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/config/mcporter.json" "${WORKSPACE}/config/mcporter.json" 2>/dev/null || true
         mc mirror "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/skills/" "${WORKSPACE}/skills/" --overwrite 2>/dev/null || true
         find "${WORKSPACE}/skills" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+        bash /opt/hiclaw/scripts/lib/render-skills.sh "${WORKSPACE}/skills" 2>/dev/null || true
         mc mirror "${HICLAW_STORAGE_PREFIX}/shared/" "${HICLAW_ROOT}/shared/" --overwrite --newer-than "5m" 2>/dev/null || true
     done
 ) &

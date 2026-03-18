@@ -751,5 +751,16 @@ if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
     log "OSS→Local sync started (every 5m, PID: $!)"
 fi
 
+# ── Render agent doc templates ────────────────────────────────────────────
+# Replace ${VAR} placeholders with actual values so the AI agent reads
+# plain text and never needs to resolve environment variables.
+# Only render Manager-owned docs; worker-skills/worker-agent/copaw-worker-agent
+# stay as templates (they are pushed to MinIO and rendered on the Worker side).
+export MANAGER_MATRIX_TOKEN MANAGER_TOKEN HIGRESS_COOKIE_FILE
+RENDER=/opt/hiclaw/scripts/lib/render-skills.sh
+bash "$RENDER" /opt/hiclaw/agent/skills
+bash "$RENDER" /opt/hiclaw/agent/skills-alpha
+bash "$RENDER" /opt/hiclaw/agent AGENTS.md TOOLS.md HEARTBEAT.md SOUL.md
+
 # Launch OpenClaw
 exec openclaw gateway run --verbose --force

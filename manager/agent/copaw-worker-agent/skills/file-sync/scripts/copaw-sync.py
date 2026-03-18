@@ -16,6 +16,7 @@ for backward compatibility with remote/pip-installed workers):
   (set at runtime by bridge.py, not a container env var)
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -124,6 +125,11 @@ def main():
                 
                 bridge_openclaw_to_copaw(openclaw_cfg, working_dir)
                 print("✓ Config re-bridged. CoPaw will hot-reload automatically.")
+            # Re-render doc templates after pulling new files from MinIO
+            subprocess.run([
+                "bash", "/opt/hiclaw/scripts/lib/render-skills.sh",
+                os.path.expanduser("~/skills")
+            ], capture_output=True)
         else:
             print("✓ No changes detected. All files are up to date.")
     except Exception as exc:

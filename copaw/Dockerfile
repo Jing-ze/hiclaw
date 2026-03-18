@@ -100,6 +100,13 @@ RUN SITE=/opt/venv/lite/lib/python3.11/site-packages \
 
 RUN rm -rf /tmp/copaw-worker/ /tmp/lite-copaw/
 
+# Shared libraries (render-skills.sh, hiclaw-env.sh)
+COPY --from=shared . /opt/hiclaw/scripts/lib/
+
+# copaw-sync wrapper
+RUN printf '#!/bin/bash\nexec python3 "/root/.copaw-worker/${HICLAW_WORKER_NAME}/skills/file-sync/scripts/copaw-sync.py" "$@"\n' \
+    > /usr/local/bin/copaw-sync && chmod +x /usr/local/bin/copaw-sync
+
 # Entrypoint script
 COPY scripts/copaw-worker-entrypoint.sh /opt/hiclaw/scripts/copaw-worker-entrypoint.sh
 RUN chmod +x /opt/hiclaw/scripts/copaw-worker-entrypoint.sh
