@@ -188,4 +188,4 @@ else
 fi
 
 echo ""
-echo "Model switch complete. OpenClaw will auto-reload the new config within a few seconds."
+echo "RESTART_REQUIRED: Run 'openclaw gateway restart' to apply the model switch."
