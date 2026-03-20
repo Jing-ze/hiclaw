@@ -4,6 +4,7 @@ Record image-affecting changes to `manager/`, `worker/`, `openclaw-base/` here b
 
 ---
 
+<<<<<<< HEAD
 **What's New**
 
 - **Team, Human & Declarative Management (hiclaw-controller)** — Introduced the `hiclaw-controller` binary for declarative resource management. Define Teams, Humans, and Workers as YAML resources and apply them with `hiclaw apply`. Teams group Workers under a leader with shared goals; Humans bind Matrix users to Workers for direct interaction. The controller watches for resource changes and reconciles state automatically. Supports inline `identity`, `soul`, and `agents` fields for Worker configuration, eliminating the need for separate files.
@@ -170,3 +171,4 @@ Record image-affecting changes to `manager/`, `worker/`, `openclaw-base/` here b
 - fix(controller): support HICLAW_NACOS_USERNAME/PASSWORD as default Nacos credentials ([ccf242c](https://github.com/alibaba/hiclaw/commit/ccf242c))
 - refactor(network): replace ExtraHosts IP injection with Docker network aliases ([0eb635d](https://github.com/alibaba/hiclaw/commit/0eb635d))
 - refactor: unify DM room creation into manager agent startup ([0569d1a](https://github.com/alibaba/hiclaw/commit/0569d1a))
+- feat(memory): add default embedding model (text-embedding-v4) support for Manager and Worker, with openclaw→copaw bridge
