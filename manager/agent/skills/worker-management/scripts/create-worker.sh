@@ -617,7 +617,14 @@ elif [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
     if [ "${SAE_STATUS}" = "created" ] || [ "${SAE_STATUS}" = "exists" ]; then
         DEPLOY_MODE="cloud"
         WORKER_STATUS="starting"
-        log "  SAE application ready for ${WORKER_NAME}"
+        SAE_APP_ID=$(echo "${CREATE_OUTPUT}" | jq -r '.app_id // empty' 2>/dev/null)
+        if [ -n "${SAE_APP_ID}" ]; then
+            jq --arg w "${WORKER_NAME}" --arg aid "${SAE_APP_ID}" \
+                '.workers[$w].sae_app_id = $aid' \
+                "${REGISTRY_FILE}" > /tmp/workers-registry-sae-id.json
+            mv /tmp/workers-registry-sae-id.json "${REGISTRY_FILE}"
+        fi
+        log "  SAE application ready for ${WORKER_NAME} (app_id=${SAE_APP_ID:-unknown})"
     else
         log "  WARNING: SAE application creation returned: ${CREATE_OUTPUT}"
         WORKER_STATUS="error"

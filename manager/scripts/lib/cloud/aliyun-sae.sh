@@ -37,32 +37,28 @@ sae_create_worker() {
 }
 
 sae_delete_worker() {
-    local worker_name="$1"
-    _log "Deleting SAE application for worker: ${worker_name}"
-    python3 "${CLOUD_WORKER_API}" sae-delete --name "${worker_name}"
+    local app_id="$1"
+    _log "Deleting SAE application: ${app_id}"
+    python3 "${CLOUD_WORKER_API}" sae-delete --app-id "${app_id}"
 }
 
 sae_stop_worker() {
-    local worker_name="$1"
-    _log "Stopping SAE application for worker: ${worker_name}"
-    python3 "${CLOUD_WORKER_API}" sae-stop --name "${worker_name}"
+    local app_id="$1"
+    _log "Stopping SAE application: ${app_id}"
+    python3 "${CLOUD_WORKER_API}" sae-stop --app-id "${app_id}"
 }
 
 sae_start_worker() {
-    local worker_name="$1"
-    _log "Starting SAE application for worker: ${worker_name}"
-    python3 "${CLOUD_WORKER_API}" sae-start --name "${worker_name}"
+    local app_id="$1"
+    _log "Starting SAE application: ${app_id}"
+    python3 "${CLOUD_WORKER_API}" sae-start --app-id "${app_id}"
 }
 
 sae_status_worker() {
-    local worker_name="$1"
+    local app_id="$1"
     local result
-    result=$(python3 "${CLOUD_WORKER_API}" sae-status --name "${worker_name}" 2>/dev/null)
+    result=$(python3 "${CLOUD_WORKER_API}" sae-status --app-id "${app_id}" 2>/dev/null)
     echo "${result}" | jq -r '.status // "unknown"' 2>/dev/null
-}
-
-sae_list_workers() {
-    python3 "${CLOUD_WORKER_API}" sae-list
 }
 
 # ── AI Gateway consumer operations ────────────────────────────────────────────

@@ -651,6 +651,12 @@ _detect_worker_backend() {
     fi
 }
 
+_get_worker_sae_app_id() {
+    local worker_name="$1"
+    local registry="${HOME}/workers-registry.json"
+    [ -f "${registry}" ] && jq -r --arg w "${worker_name}" '.workers[$w].sae_app_id // empty' "${registry}" 2>/dev/null
+}
+
 worker_backend_create() {
     local worker_name="$1"
     local fs_access_key="${2:-}"
@@ -685,7 +691,16 @@ worker_backend_status() {
 
     case "${backend}" in
         docker)       container_status_worker "${worker_name}" ;;
-        aliyun) sae_status_worker "${worker_name}" ;;
+        aliyun)
+            local app_id
+            app_id=$(_get_worker_sae_app_id "${worker_name}")
+            if [ -z "${app_id}" ]; then
+                _log "ERROR: No sae_app_id in registry for ${worker_name}"
+                echo "unknown"
+                return
+            fi
+            sae_status_worker "${app_id}"
+            ;;
         none)         echo "unknown" ;;
     esac
 }
@@ -697,7 +712,15 @@ worker_backend_stop() {
 
     case "${backend}" in
         docker)       container_stop_worker "${worker_name}" ;;
-        aliyun) sae_stop_worker "${worker_name}" ;;
+        aliyun)
+            local app_id
+            app_id=$(_get_worker_sae_app_id "${worker_name}")
+            if [ -z "${app_id}" ]; then
+                _log "ERROR: No sae_app_id in registry for ${worker_name}"
+                return 1
+            fi
+            sae_stop_worker "${app_id}"
+            ;;
         none)         return 1 ;;
     esac
 }
@@ -709,7 +732,15 @@ worker_backend_start() {
 
     case "${backend}" in
         docker)       container_start_worker "${worker_name}" ;;
-        aliyun) sae_start_worker "${worker_name}" ;;
+        aliyun)
+            local app_id
+            app_id=$(_get_worker_sae_app_id "${worker_name}")
+            if [ -z "${app_id}" ]; then
+                _log "ERROR: No sae_app_id in registry for ${worker_name}"
+                return 1
+            fi
+            sae_start_worker "${app_id}"
+            ;;
         none)         return 1 ;;
     esac
 }
@@ -721,7 +752,15 @@ worker_backend_delete() {
 
     case "${backend}" in
         docker)       container_remove_worker "${worker_name}" ;;
-        aliyun) sae_delete_worker "${worker_name}" ;;
+        aliyun)
+            local app_id
+            app_id=$(_get_worker_sae_app_id "${worker_name}")
+            if [ -z "${app_id}" ]; then
+                _log "ERROR: No sae_app_id in registry for ${worker_name}"
+                return 1
+            fi
+            sae_delete_worker "${app_id}"
+            ;;
         none)         return 1 ;;
     esac
 }

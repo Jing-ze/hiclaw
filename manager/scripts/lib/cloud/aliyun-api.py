@@ -12,11 +12,10 @@ Authentication priority:
 
 Usage:
   aliyun-api.py sae-create  --name <worker> [--image <url>] [--envs '{"K":"V"}']
-  aliyun-api.py sae-delete  --name <worker>
-  aliyun-api.py sae-stop    --name <worker>
-  aliyun-api.py sae-start   --name <worker>
-  aliyun-api.py sae-status  --name <worker>
-  aliyun-api.py sae-list
+  aliyun-api.py sae-delete  --app-id <id>
+  aliyun-api.py sae-stop    --app-id <id>
+  aliyun-api.py sae-start   --app-id <id>
+  aliyun-api.py sae-status  --app-id <id>
   aliyun-api.py gw-create-consumer --name <consumer>
   aliyun-api.py gw-bind-consumer   --consumer-id <id> --api-id <id> --env-id <id>
 
@@ -208,16 +207,10 @@ def sae_delete(args):
     from alibabacloud_sae20190506 import models as sae_models
 
     sae = _get_sae_client()
-    app_id, app_name = _find_worker_app(sae, args.name)
-
-    if not app_id:
-        print(json.dumps({"app_name": f"hiclaw-worker-{args.name}", "status": "not_found"}))
-        return
-
-    req = sae_models.DeleteApplicationRequest(app_id=app_id)
+    req = sae_models.DeleteApplicationRequest(app_id=args.app_id)
     sae.delete_application(req)
-    log(f"Application deleted: {app_name} ({app_id})")
-    print(json.dumps({"app_id": app_id, "app_name": app_name, "status": "deleted"}))
+    log(f"Application deleted: {args.app_id}")
+    print(json.dumps({"app_id": args.app_id, "status": "deleted"}))
 
 
 def sae_stop(args):
@@ -225,16 +218,10 @@ def sae_stop(args):
     from alibabacloud_sae20190506 import models as sae_models
 
     sae = _get_sae_client()
-    app_id, app_name = _find_worker_app(sae, args.name)
-
-    if not app_id:
-        print(json.dumps({"app_name": f"hiclaw-worker-{args.name}", "status": "not_found"}))
-        return
-
-    req = sae_models.StopApplicationRequest(app_id=app_id)
+    req = sae_models.StopApplicationRequest(app_id=args.app_id)
     sae.stop_application(req)
-    log(f"Application stopped: {app_name} ({app_id})")
-    print(json.dumps({"app_id": app_id, "app_name": app_name, "status": "stopped"}))
+    log(f"Application stopped: {args.app_id}")
+    print(json.dumps({"app_id": args.app_id, "status": "stopped"}))
 
 
 def sae_start(args):
@@ -242,16 +229,10 @@ def sae_start(args):
     from alibabacloud_sae20190506 import models as sae_models
 
     sae = _get_sae_client()
-    app_id, app_name = _find_worker_app(sae, args.name)
-
-    if not app_id:
-        print(json.dumps({"app_name": f"hiclaw-worker-{args.name}", "status": "not_found"}))
-        return
-
-    req = sae_models.StartApplicationRequest(app_id=app_id)
+    req = sae_models.StartApplicationRequest(app_id=args.app_id)
     sae.start_application(req)
-    log(f"Application started: {app_name} ({app_id})")
-    print(json.dumps({"app_id": app_id, "app_name": app_name, "status": "running"}))
+    log(f"Application started: {args.app_id}")
+    print(json.dumps({"app_id": args.app_id, "status": "running"}))
 
 
 def sae_status(args):
@@ -259,13 +240,7 @@ def sae_status(args):
     from alibabacloud_sae20190506 import models as sae_models
 
     sae = _get_sae_client()
-    app_id, app_name = _find_worker_app(sae, args.name)
-
-    if not app_id:
-        print(json.dumps({"app_name": f"hiclaw-worker-{args.name}", "status": "not_found"}))
-        return
-
-    req = sae_models.DescribeApplicationStatusRequest(app_id=app_id)
+    req = sae_models.DescribeApplicationStatusRequest(app_id=args.app_id)
     resp = sae.describe_application_status(req)
     current_status = resp.body.data.current_status if resp.body.data else "unknown"
 
@@ -279,36 +254,10 @@ def sae_status(args):
     normalized = status_map.get(current_status, current_status.lower() if current_status else "unknown")
 
     print(json.dumps({
-        "app_id": app_id,
-        "app_name": app_name,
+        "app_id": args.app_id,
         "status": normalized,
         "sae_status": current_status,
     }))
-
-
-def sae_list(args):
-    """List all hiclaw-worker SAE applications."""
-    from alibabacloud_sae20190506 import models as sae_models
-
-    sae = _get_sae_client()
-    namespace_id = os.environ.get("HICLAW_SAE_NAMESPACE_ID", "")
-
-    req = sae_models.ListApplicationsRequest(namespace_id=namespace_id)
-    resp = sae.list_applications(req)
-
-    workers = []
-    prefix = "hiclaw-worker-"
-    if resp.body and resp.body.data and resp.body.data.applications:
-        for app in resp.body.data.applications:
-            if app.app_name and app.app_name.startswith(prefix):
-                name = app.app_name[len(prefix):]
-                workers.append({
-                    "name": name,
-                    "app_name": app.app_name,
-                    "app_id": app.app_id,
-                })
-
-    print(json.dumps({"workers": workers}))
 
 
 # ---------------------------------------------------------------------------
@@ -477,18 +426,16 @@ def main():
     p.add_argument("--envs", default="{}")
 
     p = sub.add_parser("sae-delete")
-    p.add_argument("--name", required=True)
+    p.add_argument("--app-id", required=True)
 
     p = sub.add_parser("sae-stop")
-    p.add_argument("--name", required=True)
+    p.add_argument("--app-id", required=True)
 
     p = sub.add_parser("sae-start")
-    p.add_argument("--name", required=True)
+    p.add_argument("--app-id", required=True)
 
     p = sub.add_parser("sae-status")
-    p.add_argument("--name", required=True)
-
-    sub.add_parser("sae-list")
+    p.add_argument("--app-id", required=True)
 
     # Gateway commands
     p = sub.add_parser("gw-create-consumer")
@@ -507,7 +454,6 @@ def main():
         "sae-stop": sae_stop,
         "sae-start": sae_start,
         "sae-status": sae_status,
-        "sae-list": sae_list,
         "gw-create-consumer": gw_create_consumer,
         "gw-bind-consumer": gw_bind_consumer,
     }
