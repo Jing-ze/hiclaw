@@ -16,3 +16,6 @@ Record image-affecting changes to `manager/`, `worker/`, `openclaw-base/` here b
 - fix(cloud): respect pre-set `HICLAW_RUNTIME` in hiclaw-env.sh — only auto-detect when unset
 - fix: add explicit Matrix room join with retry before sending welcome message to prevent race condition
 
+### Logging
+- **chore: quiet mc sync logs** — Add `--quiet` flag to all background `mc mirror`/`mc cp` commands in sync loops (manager, worker, copaw) to suppress noisy transfer tables (`Total | Transferred | Duration | Speed`) that flood logs with zero-byte entries. Startup initial sync retains normal output for troubleshooting. CoPaw `_mc()` helper stdout logging downgraded from `info` to `debug`.
+

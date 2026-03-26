@@ -56,5 +56,5 @@ log "MinIO storage initialized and synced to ${HICLAW_FS_ROOT}/"
 # This loop is a safety net only — see design principle above.
 while true; do
     sleep 300
-    mc mirror "${HICLAW_STORAGE_PREFIX}/" "${HICLAW_FS_ROOT}/" --overwrite --newer-than "5m" 2>/dev/null || true
+    mc mirror --quiet "${HICLAW_STORAGE_PREFIX}/" "${HICLAW_FS_ROOT}/" --overwrite --newer-than "5m" 2>/dev/null || true
 done
