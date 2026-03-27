@@ -397,7 +397,9 @@ fi
 # ============================================================
 log "Step 8: Syncing to storage..."
 ensure_mc_credentials 2>/dev/null || true
-mc mirror "/root/hiclaw-fs/agents/${WORKER_NAME}/" "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/" --overwrite 2>&1 | tail -5
+hiclaw_mc_exclude_args
+mc mirror "/root/hiclaw-fs/agents/${WORKER_NAME}/" "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/" --overwrite \
+    "${HICLAW_MC_EXCLUDE_ARGS[@]}" 2>&1 | tail -5
 mc stat "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/SOUL.md" > /dev/null 2>&1 \
     || _fail "SOUL.md not found in MinIO after sync"
 mc stat "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/openclaw.json" > /dev/null 2>&1 \

@@ -49,3 +49,38 @@ HICLAW_STORAGE_PREFIX="hiclaw/${HICLAW_STORAGE_BUCKET}"
 source /opt/hiclaw/scripts/lib/oss-credentials.sh 2>/dev/null || true
 
 export HICLAW_RUNTIME HICLAW_MATRIX_SERVER HICLAW_AI_GATEWAY_SERVER HICLAW_STORAGE_BUCKET HICLAW_STORAGE_PREFIX
+
+# ── Sync exclude patterns ────────────────────────────────────────────────────
+# Runtime/ephemeral directories that must NOT be synced to remote storage.
+# mc binary is installed as mc.bin, so its config dir is .mc.bin/ (not .mc/).
+HICLAW_SYNC_EXCLUDES=(
+    ".mc.bin/**"
+    ".mc/**"
+    ".openclaw/**"
+    ".copaw/**"
+    ".copaw.secret/**"
+    ".cache/**"
+    ".npm/**"
+    ".local/**"
+    ".agents/**"
+    "__pycache__/**"
+    "credentials/**"
+    "node_modules/**"
+    "*.lock"
+)
+
+# hiclaw_mc_exclude_args [extra_patterns...]
+# Populates HICLAW_MC_EXCLUDE_ARGS array with --exclude flags for mc mirror.
+# Must be called before mc mirror; use "${HICLAW_MC_EXCLUDE_ARGS[@]}" to expand.
+# Usage:
+#   hiclaw_mc_exclude_args "openclaw.json" "config/mcporter.json"
+#   mc mirror src/ dst/ --overwrite "${HICLAW_MC_EXCLUDE_ARGS[@]}"
+hiclaw_mc_exclude_args() {
+    HICLAW_MC_EXCLUDE_ARGS=()
+    for pattern in "${HICLAW_SYNC_EXCLUDES[@]}"; do
+        HICLAW_MC_EXCLUDE_ARGS+=(--exclude "$pattern")
+    done
+    for pattern in "$@"; do
+        HICLAW_MC_EXCLUDE_ARGS+=(--exclude "$pattern")
+    done
+}

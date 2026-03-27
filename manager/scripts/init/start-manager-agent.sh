@@ -937,8 +937,9 @@ log "Agent doc templates rendered"
 if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
     log "Syncing initial workspace to OSS..."
     ensure_mc_credentials
+    hiclaw_mc_exclude_args
     mc mirror /root/manager-workspace/ "${HICLAW_STORAGE_PREFIX}/manager/" --overwrite \
-        --exclude ".openclaw/**" --exclude ".cache/**" 2>/dev/null || true
+        "${HICLAW_MC_EXCLUDE_ARGS[@]}" 2>/dev/null || true
 
     # Local → OSS: change-triggered sync
     (
@@ -946,9 +947,9 @@ if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
             CHANGED=$(find /root/manager-workspace/ -type f -newermt "15 seconds ago" 2>/dev/null | head -1)
             if [ -n "${CHANGED}" ]; then
                 ensure_mc_credentials 2>/dev/null || true
+                hiclaw_mc_exclude_args
                 mc mirror /root/manager-workspace/ "${HICLAW_STORAGE_PREFIX}/manager/" --overwrite \
-                    --exclude ".openclaw/**" --exclude ".cache/**" --exclude ".npm/**" \
-                    --exclude ".local/**" --exclude ".mc/**" 2>/dev/null || true
+                    "${HICLAW_MC_EXCLUDE_ARGS[@]}" 2>/dev/null || true
             fi
             sleep 10
         done

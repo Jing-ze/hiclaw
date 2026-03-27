@@ -156,12 +156,9 @@ log "HOME set to ${HOME} (workspace files will be synced to MinIO)"
         CHANGED=$(find "${WORKSPACE}/" -type f -newermt "10 seconds ago" 2>/dev/null | head -1)
         if [ -n "${CHANGED}" ]; then
             ensure_mc_credentials 2>/dev/null || true
+            hiclaw_mc_exclude_args "openclaw.json" "config/mcporter.json" "mcporter-servers.json"
             if ! mc mirror "${WORKSPACE}/" "${HICLAW_STORAGE_PREFIX}/agents/${WORKER_NAME}/" --overwrite \
-                --exclude "openclaw.json" --exclude "config/mcporter.json" --exclude "mcporter-servers.json" --exclude ".agents/**" \
-                --exclude "credentials/**" \
-                --exclude ".cache/**" --exclude ".npm/**" \
-                --exclude ".local/**" --exclude ".mc/**" --exclude "*.lock" \
-                --exclude ".openclaw/matrix/**" --exclude ".openclaw/canvas/**" 2>&1; then
+                "${HICLAW_MC_EXCLUDE_ARGS[@]}" 2>&1; then
                 log "WARNING: Local->Remote sync failed"
             fi
         fi
