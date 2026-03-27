@@ -16,8 +16,37 @@ func mockDockerAPI(t *testing.T) *httptest.Server {
 
 	// In-memory container store
 	containers := map[string]map[string]interface{}{}
+	// In-memory image store (pre-populated with common test images)
+	images := map[string]bool{
+		"hiclaw/worker-agent:latest": true,
+		"hiclaw/copaw-worker:latest": true,
+		"img:latest":                 true,
+	}
 
 	mux := http.NewServeMux()
+
+	// GET /images/{name}/json — check if image exists
+	mux.HandleFunc("GET /images/", func(w http.ResponseWriter, r *http.Request) {
+		// Extract image name from path (strip /images/ prefix and /json suffix)
+		path := strings.TrimPrefix(r.URL.Path, "/images/")
+		path = strings.TrimSuffix(path, "/json")
+		if images[path] {
+			json.NewEncoder(w).Encode(map[string]string{"Id": "sha256-" + path})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "not found"})
+	})
+
+	// POST /images/create — pull image
+	mux.HandleFunc("POST /images/create", func(w http.ResponseWriter, r *http.Request) {
+		fromImage := r.URL.Query().Get("fromImage")
+		if fromImage != "" {
+			images[fromImage] = true
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"Pull complete"}`))
+	})
 
 	// POST /containers/create?name=xxx
 	mux.HandleFunc("POST /containers/create", func(w http.ResponseWriter, r *http.Request) {
@@ -185,9 +214,31 @@ func TestDockerCreateConflict(t *testing.T) {
 		t.Fatalf("first create failed: %v", err)
 	}
 
-	_, err = b.Create(context.Background(), CreateRequest{Name: "alice", Image: "img:latest"})
-	if err == nil {
-		t.Error("expected conflict error on duplicate create")
+	// Second create should succeed — auto-deletes existing container and retries
+	result, err := b.Create(context.Background(), CreateRequest{Name: "alice", Image: "img:latest"})
+	if err != nil {
+		t.Fatalf("second create should succeed (auto-delete+retry), got: %v", err)
+	}
+	if result.Name != "alice" {
+		t.Errorf("expected name alice, got %s", result.Name)
+	}
+}
+
+func TestDockerCreatePullsImage(t *testing.T) {
+	srv := mockDockerAPI(t)
+	defer srv.Close()
+	b := newTestDockerBackend(t, srv.URL)
+
+	// Use an image that doesn't exist in the mock store — it should be pulled
+	result, err := b.Create(context.Background(), CreateRequest{
+		Name:  "puller",
+		Image: "custom/image:v2",
+	})
+	if err != nil {
+		t.Fatalf("Create with image pull failed: %v", err)
+	}
+	if result.Status != StatusRunning {
+		t.Errorf("expected running, got %s", result.Status)
 	}
 }
 

@@ -121,6 +121,8 @@ CREATE_BODY=$(jq -cn \
 
 CREATE_OUTPUT=$(worker_backend_create "${CREATE_BODY}" 2>/dev/null) || true
 CREATE_STATUS=$(echo "${CREATE_OUTPUT}" | jq -r '.status // "error"' 2>/dev/null)
+CONTAINER_ID=$(echo "${CREATE_OUTPUT}" | jq -r '.container_id // empty' 2>/dev/null)
+CONSOLE_HOST_PORT=$(echo "${CREATE_OUTPUT}" | jq -r '.console_host_port // empty' 2>/dev/null)
 
 if [ "${CREATE_STATUS}" != "running" ] && [ "${CREATE_STATUS}" != "starting" ]; then
     log "ERROR: Failed to recreate container"
