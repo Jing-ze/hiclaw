@@ -325,12 +325,28 @@ action_start() {
         local runtime
         runtime=$(jq -r --arg w "$worker" '.workers[$w].runtime // "openclaw"' "$REGISTRY_FILE" 2>/dev/null)
 
-        # Build create request for orchestrator
+        # Build create request for orchestrator (include env vars for worker to function)
+        local env_map
+        env_map=$(jq -cn \
+            --arg name "$worker" \
+            --arg fak "$worker" \
+            --arg fsk "${WORKER_MINIO_PASSWORD:-}" \
+            --arg fs_domain "${HICLAW_FS_DOMAIN:-fs-local.hiclaw.io}" \
+            --arg orchestrator_url "${HICLAW_ORCHESTRATOR_URL:-}" \
+            '{
+                "HICLAW_WORKER_NAME": $name,
+                "HICLAW_FS_ENDPOINT": ("http://" + ($fs_domain | split(":")[0]) + ":8080"),
+                "HICLAW_FS_ACCESS_KEY": $fak,
+                "HICLAW_FS_SECRET_KEY": $fsk
+            }
+            | if $orchestrator_url != "" then . + {"HICLAW_ORCHESTRATOR_URL": $orchestrator_url} else . end')
+
         local create_body
         create_body=$(jq -cn \
             --arg name "$worker" \
             --arg runtime "$runtime" \
-            '{name: $name, runtime: $runtime}')
+            --argjson env "$env_map" \
+            '{name: $name, runtime: $runtime, env: $env}')
         worker_backend_create "$create_body" > /dev/null 2>&1 && ok=true
     else
         _log "Starting worker $worker (status: $status)"

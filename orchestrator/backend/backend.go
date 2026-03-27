@@ -58,13 +58,14 @@ const (
 
 // WorkerResult holds the result of a worker operation.
 type WorkerResult struct {
-	Name           string       `json:"name"`
-	Backend        string       `json:"backend"`
-	DeploymentMode string       `json:"deployment_mode"`
-	Status         WorkerStatus `json:"status"`
-	ContainerID    string       `json:"container_id,omitempty"`
-	AppID          string       `json:"app_id,omitempty"`
-	RawStatus      string       `json:"raw_status,omitempty"`
+	Name            string       `json:"name"`
+	Backend         string       `json:"backend"`
+	DeploymentMode  string       `json:"deployment_mode"`
+	Status          WorkerStatus `json:"status"`
+	ContainerID     string       `json:"container_id,omitempty"`
+	AppID           string       `json:"app_id,omitempty"`
+	RawStatus       string       `json:"raw_status,omitempty"`
+	ConsoleHostPort string       `json:"console_host_port,omitempty"`
 }
 
 // WorkerBackend defines the interface for worker lifecycle operations.

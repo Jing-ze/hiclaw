@@ -2296,6 +2296,8 @@ EOF
             --network hiclaw-net \
             -v "${CONTAINER_SOCK}:/var/run/docker.sock" \
             --security-opt label=disable \
+            -e HICLAW_WORKER_IMAGE="${WORKER_IMAGE}" \
+            -e HICLAW_COPAW_WORKER_IMAGE="${COPAW_WORKER_IMAGE}" \
             ${HICLAW_PROXY_ALLOWED_REGISTRIES:+-e HICLAW_PROXY_ALLOWED_REGISTRIES="${HICLAW_PROXY_ALLOWED_REGISTRIES}"} \
             --restart unless-stopped \
             "${_proxy_image}"

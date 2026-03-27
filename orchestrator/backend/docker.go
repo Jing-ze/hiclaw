@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -96,53 +99,117 @@ func (d *DockerBackend) Create(ctx context.Context, req CreateRequest) (*WorkerR
 		}
 	}
 
-	payload := d.buildCreatePayload(req)
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal create payload: %w", err)
+	// Ensure image is available locally, pull if needed
+	if err := d.ensureImage(ctx, req.Image); err != nil {
+		return nil, err
 	}
 
-	u := fmt.Sprintf("http://localhost/containers/create?name=%s", url.QueryEscape(containerName))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("build create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := d.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("docker create: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusConflict {
-		return nil, fmt.Errorf("%w: container %q", ErrConflict, containerName)
-	}
-	if resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("docker create failed (status %d): %s", resp.StatusCode, string(respBody))
+	// Detect console port from env (for CoPaw workers)
+	consolePort := ""
+	if req.Env != nil {
+		consolePort = req.Env["HICLAW_CONSOLE_PORT"]
 	}
 
-	var createResp struct {
-		ID string `json:"Id"`
-	}
-	if err := json.Unmarshal(respBody, &createResp); err != nil {
-		return nil, fmt.Errorf("parse create response: %w", err)
-	}
-
-	if err := d.startContainer(ctx, createResp.ID); err != nil {
-		return nil, fmt.Errorf("start after create: %w", err)
+	// Pick a random host port for console binding
+	hostPort := 0
+	if consolePort != "" {
+		hostPort = 10000 + rand.Intn(10001)
 	}
 
-	return &WorkerResult{
-		Name:           req.Name,
-		Backend:        "docker",
-		DeploymentMode: DeployLocal,
-		Status:         StatusRunning,
-		ContainerID:    createResp.ID,
-		RawStatus:      "running",
-	}, nil
+	const maxPortRetries = 10
+	for attempt := 0; ; attempt++ {
+		payload := d.buildCreatePayload(req, consolePort, hostPort)
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal create payload: %w", err)
+		}
+
+		containerID, err := d.doCreate(ctx, containerName, body)
+		if err != nil {
+			return nil, err
+		}
+
+		// Start the container
+		startErr := d.startContainer(ctx, containerID)
+		if startErr == nil {
+			result := &WorkerResult{
+				Name:           req.Name,
+				Backend:        "docker",
+				DeploymentMode: DeployLocal,
+				Status:         StatusRunning,
+				ContainerID:    containerID,
+				RawStatus:      "running",
+			}
+			if consolePort != "" && hostPort > 0 {
+				result.ConsoleHostPort = strconv.Itoa(hostPort)
+				log.Printf("[Docker] Console: container port %s -> host port %d", consolePort, hostPort)
+			}
+			return result, nil
+		}
+
+		// Check if start failed due to port conflict — retry with different port
+		errMsg := startErr.Error()
+		if consolePort != "" && attempt < maxPortRetries &&
+			(strings.Contains(errMsg, "already allocated") ||
+				strings.Contains(errMsg, "address already in use") ||
+				strings.Contains(errMsg, "port is already")) {
+			log.Printf("[Docker] Host port %d in use, retrying with %d...", hostPort, hostPort+1)
+			hostPort++
+			// Clean up the container we just created
+			d.Delete(ctx, req.Name)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		return nil, fmt.Errorf("start after create: %w", startErr)
+	}
+}
+
+// doCreate sends the container create request to Docker, handling conflict by
+// deleting the existing container and retrying once.
+func (d *DockerBackend) doCreate(ctx context.Context, containerName string, body []byte) (string, error) {
+	for retry := 0; retry < 2; retry++ {
+		u := fmt.Sprintf("http://localhost/containers/create?name=%s", url.QueryEscape(containerName))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(body)))
+		if err != nil {
+			return "", fmt.Errorf("build create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := d.client.Do(httpReq)
+		if err != nil {
+			return "", fmt.Errorf("docker create: %w", err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusConflict && retry == 0 {
+			// Remove existing container and retry once
+			log.Printf("[Docker] Container %s already exists, removing before recreate", containerName)
+			// Extract worker name from container name
+			name := strings.TrimPrefix(containerName, d.containerPrefix)
+			if err := d.Delete(ctx, name); err != nil {
+				return "", fmt.Errorf("delete existing container: %w", err)
+			}
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		if resp.StatusCode == http.StatusConflict {
+			return "", fmt.Errorf("%w: container %q", ErrConflict, containerName)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			return "", fmt.Errorf("docker create failed (status %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		var createResp struct {
+			ID string `json:"Id"`
+		}
+		if err := json.Unmarshal(respBody, &createResp); err != nil {
+			return "", fmt.Errorf("parse create response: %w", err)
+		}
+		return createResp.ID, nil
+	}
+	return "", fmt.Errorf("docker create: exhausted retries")
 }
 
 func (d *DockerBackend) Delete(ctx context.Context, name string) error {
@@ -308,6 +375,59 @@ func (d *DockerBackend) List(ctx context.Context) ([]WorkerResult, error) {
 
 // --- internal helpers ---
 
+// ensureImage checks if an image exists locally and pulls it if not.
+func (d *DockerBackend) ensureImage(ctx context.Context, image string) error {
+	// Check if image exists locally
+	// Note: Docker Engine API expects unescaped image names in the path
+	// (e.g. /images/hiclaw/worker-agent:latest/json), not PathEscaped.
+	u := "http://localhost/images/" + image + "/json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return fmt.Errorf("build image inspect request: %w", err)
+	}
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker image inspect: %w", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil // image exists
+	}
+
+	// Pull the image
+	log.Printf("[Docker] Image not found locally, pulling: %s", image)
+	pullURL := fmt.Sprintf("http://localhost/images/create?fromImage=%s", url.QueryEscape(image))
+	pullReq, err := http.NewRequestWithContext(ctx, http.MethodPost, pullURL, nil)
+	if err != nil {
+		return fmt.Errorf("build image pull request: %w", err)
+	}
+	pullResp, err := d.client.Do(pullReq)
+	if err != nil {
+		return fmt.Errorf("docker image pull: %w", err)
+	}
+	// Read full body to wait for pull completion (Docker streams progress JSON)
+	io.Copy(io.Discard, pullResp.Body)
+	pullResp.Body.Close()
+
+	// Verify image is now available
+	verifyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return fmt.Errorf("build image verify request: %w", err)
+	}
+	verifyResp, err := d.client.Do(verifyReq)
+	if err != nil {
+		return fmt.Errorf("docker image verify: %w", err)
+	}
+	verifyResp.Body.Close()
+
+	if verifyResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to pull image %s", image)
+	}
+	log.Printf("[Docker] Image pulled successfully: %s", image)
+	return nil
+}
+
 func (d *DockerBackend) startContainer(ctx context.Context, nameOrID string) error {
 	u := fmt.Sprintf("http://localhost/containers/%s/start", url.PathEscape(nameOrID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
@@ -335,18 +455,24 @@ func (d *DockerBackend) startContainer(ctx context.Context, nameOrID string) err
 
 // dockerCreatePayload is the Docker Engine API container create body.
 type dockerCreatePayload struct {
-	Image      string            `json:"Image"`
-	Env        []string          `json:"Env,omitempty"`
-	WorkingDir string            `json:"WorkingDir,omitempty"`
-	HostConfig *dockerHostConfig `json:"HostConfig,omitempty"`
+	Image        string                              `json:"Image"`
+	Env          []string                            `json:"Env,omitempty"`
+	WorkingDir   string                              `json:"WorkingDir,omitempty"`
+	ExposedPorts map[string]struct{}                  `json:"ExposedPorts,omitempty"`
+	HostConfig   *dockerHostConfig                    `json:"HostConfig,omitempty"`
 }
 
 type dockerHostConfig struct {
-	NetworkMode string   `json:"NetworkMode,omitempty"`
-	ExtraHosts  []string `json:"ExtraHosts,omitempty"`
+	NetworkMode  string                               `json:"NetworkMode,omitempty"`
+	ExtraHosts   []string                             `json:"ExtraHosts,omitempty"`
+	PortBindings map[string][]dockerPortBinding        `json:"PortBindings,omitempty"`
 }
 
-func (d *DockerBackend) buildCreatePayload(req CreateRequest) dockerCreatePayload {
+type dockerPortBinding struct {
+	HostPort string `json:"HostPort"`
+}
+
+func (d *DockerBackend) buildCreatePayload(req CreateRequest, consolePort string, hostPort int) dockerCreatePayload {
 	// Sort env keys for deterministic output
 	keys := make([]string, 0, len(req.Env))
 	for k := range req.Env {
@@ -365,11 +491,22 @@ func (d *DockerBackend) buildCreatePayload(req CreateRequest) dockerCreatePayloa
 		WorkingDir: req.WorkingDir,
 	}
 
-	if req.Network != "" || len(req.ExtraHosts) > 0 {
-		p.HostConfig = &dockerHostConfig{
-			NetworkMode: req.Network,
-			ExtraHosts:  req.ExtraHosts,
+	hc := &dockerHostConfig{
+		NetworkMode: req.Network,
+		ExtraHosts:  req.ExtraHosts,
+	}
+
+	// Console port binding (CoPaw workers)
+	if consolePort != "" && hostPort > 0 {
+		portKey := consolePort + "/tcp"
+		p.ExposedPorts = map[string]struct{}{portKey: {}}
+		hc.PortBindings = map[string][]dockerPortBinding{
+			portKey: {{HostPort: strconv.Itoa(hostPort)}},
 		}
+	}
+
+	if hc.NetworkMode != "" || len(hc.ExtraHosts) > 0 || len(hc.PortBindings) > 0 {
+		p.HostConfig = hc
 	}
 
 	return p

@@ -2012,6 +2012,8 @@ function Install-Manager {
                     --network hiclaw-net `
                     -v "//var/run/docker.sock:/var/run/docker.sock" `
                     --security-opt label=disable `
+                    -e "HICLAW_WORKER_IMAGE=$($script:WORKER_IMAGE)" `
+                    -e "HICLAW_COPAW_WORKER_IMAGE=$($script:COPAW_WORKER_IMAGE)" `
                     $(if ($config.PROXY_ALLOWED_REGISTRIES) { @("-e", "HICLAW_PROXY_ALLOWED_REGISTRIES=$($config.PROXY_ALLOWED_REGISTRIES)") }) `
                     --restart unless-stopped `
                     $proxyImage

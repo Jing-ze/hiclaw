@@ -607,6 +607,7 @@ elif container_api_available; then
 
     CREATE_STATUS=$(echo "${CREATE_OUTPUT}" | jq -r '.status // "error"' 2>/dev/null)
     CONTAINER_ID=$(echo "${CREATE_OUTPUT}" | jq -r '.container_id // empty' 2>/dev/null)
+    CONSOLE_HOST_PORT=$(echo "${CREATE_OUTPUT}" | jq -r '.console_host_port // empty' 2>/dev/null)
 
     if [ "${CREATE_STATUS}" = "running" ] || [ "${CREATE_STATUS}" = "starting" ]; then
         DEPLOY_MODE=$(echo "${CREATE_OUTPUT}" | jq -r '.deployment_mode // "local"' 2>/dev/null)
