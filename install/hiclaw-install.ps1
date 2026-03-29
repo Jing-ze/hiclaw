@@ -1,6 +1,6 @@
 #!/usr/bin/env powershell
 # hiclaw-install.ps1 - One-click installation for HiClaw Manager and Worker on Windows
-# Compatible with PowerShell 5.1+ and PowerShell 7.0+
+# Requires PowerShell 7.0+ (recommended)
 #
 # Usage:
 #   .\hiclaw-install.ps1                  # Interactive installation (choose Quick Start or Manual)
@@ -65,7 +65,7 @@ $script:HICLAW_ENV_FILE = if ($EnvFile) { $EnvFile } elseif ($env:HICLAW_ENV_FIL
 $script:StepResult = ""  # Used by state machine to signal "back" navigation
 $script:config = @{}     # Shared config hashtable for step functions
 
-# ANSI escape character for PowerShell 5.1+ compatibility
+# ANSI escape character for terminal colors
 $script:ESC = [char]0x1B
 
 # ============================================================
