@@ -109,22 +109,14 @@ func buildBackends(cfg *Config, cloudCreds backend.CloudCredentialProvider) ([]b
 
 	// Docker backend — always registered; Available() checks socket at runtime
 	workers = append(workers, backend.NewDockerBackend(cfg.DockerConfig(), cfg.ContainerPrefix))
-	if cfg.WorkerBackend == "k8s" {
-		if k8s, err := backend.NewK8sBackend(cfg.K8sConfig(), cfg.ContainerPrefix); err != nil {
-			log.Printf("[WARN] Failed to create K8s backend: %v", err)
+
+	// SAE backend — registered if worker image is configured
+	if cfg.SAEWorkerImage != "" && cloudCreds != nil {
+		sae, err := backend.NewSAEBackend(cloudCreds, cfg.SAEConfig(), cfg.ContainerPrefix)
+		if err != nil {
+			log.Printf("[WARN] Failed to create SAE backend: %v", err)
 		} else {
-			workers = append(workers, k8s)
-		}
-	} else if cfg.WorkerBackend == "sae" {
-		if cfg.SAEWorkerImage == "" || cloudCreds == nil {
-			log.Printf("[WARN] SAE backend requested but SAE config is incomplete")
-		} else {
-			sae, err := backend.NewSAEBackend(cloudCreds, cfg.SAEConfig(), cfg.ContainerPrefix)
-			if err != nil {
-				log.Printf("[WARN] Failed to create SAE backend: %v", err)
-			} else {
-				workers = append(workers, sae)
-			}
+			workers = append(workers, sae)
 		}
 	}
 
@@ -137,6 +129,9 @@ func buildBackends(cfg *Config, cloudCreds backend.CloudCredentialProvider) ([]b
 			gateways = append(gateways, apig)
 		}
 	}
+
+	// Future: K8s backend
+	// if cfg.K8sKubeconfig != "" { workers = append(workers, backend.NewK8sBackend(...)) }
 
 	return workers, gateways
 }

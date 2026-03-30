@@ -2,10 +2,13 @@
 # generate-worker-config.sh - Generate Worker openclaw.json from template
 #
 # Usage:
-#   generate-worker-config.sh <WORKER_NAME> <MATRIX_TOKEN> <GATEWAY_KEY> [MODEL_ID]
+#   generate-worker-config.sh <WORKER_NAME> <MATRIX_TOKEN> <GATEWAY_KEY> [MODEL_ID] [TEAM_LEADER_NAME]
 #
 # Reads env vars: HICLAW_MATRIX_DOMAIN, HICLAW_AI_GATEWAY_DOMAIN, HICLAW_ADMIN_USER, HICLAW_DEFAULT_MODEL
 # Output: /root/hiclaw-fs/agents/<WORKER_NAME>/openclaw.json
+#
+# If TEAM_LEADER_NAME is provided, groupAllowFrom and dm.allowFrom will use
+# [Leader, Admin] instead of [Manager, Admin].
 
 set -e
 source /opt/hiclaw/scripts/lib/hiclaw-env.sh
@@ -14,6 +17,7 @@ WORKER_NAME="$1"
 WORKER_MATRIX_TOKEN="$2"
 WORKER_GATEWAY_KEY="$3"
 MODEL_NAME="${4:-${HICLAW_DEFAULT_MODEL:-qwen3.5-plus}}"
+TEAM_LEADER_NAME="${5:-}"
 # Strip provider prefix if caller passed "hiclaw-gateway/<model>" by mistake
 MODEL_NAME="${MODEL_NAME#hiclaw-gateway/}"
 
@@ -221,4 +225,18 @@ if [ "${_cms_traces_lc}" = "true" ]; then
             mv "${OUTPUT_DIR}/openclaw.json.cms-tmp" "${OUTPUT_DIR}/openclaw.json"
         log "CMS plugin config injected into Worker ${WORKER_NAME} openclaw.json (service=${_cms_worker_service}, metrics=${_cms_metrics_lc})"
     fi
+fi
+
+# If this worker belongs to a team, override groupAllowFrom and dm.allowFrom
+# to use [Leader, Admin] instead of [Manager, Admin]
+if [ -n "${TEAM_LEADER_NAME}" ]; then
+    LEADER_MATRIX_ID="@${TEAM_LEADER_NAME}:${MATRIX_DOMAIN_FOR_ID}"
+    ADMIN_MATRIX_ID="@${ADMIN_USER}:${MATRIX_DOMAIN_FOR_ID}"
+    jq --arg leader "${LEADER_MATRIX_ID}" \
+       --arg admin "${ADMIN_MATRIX_ID}" \
+       '.channels.matrix.groupAllowFrom = [$leader, $admin]
+        | .channels.matrix.dm.allowFrom = [$leader, $admin]' \
+       "${OUTPUT_DIR}/openclaw.json" > "${OUTPUT_DIR}/openclaw.json.tmp"
+    mv "${OUTPUT_DIR}/openclaw.json.tmp" "${OUTPUT_DIR}/openclaw.json"
+    log "  Overrode groupAllowFrom/dm.allowFrom for team worker (leader=${TEAM_LEADER_NAME})"
 fi
