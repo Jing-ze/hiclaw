@@ -119,12 +119,10 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 	}
 
 	image := req.Image
-	if image == "" {
-		if req.Runtime == RuntimeCopaw && k.config.CopawWorkerImage != "" {
-			image = k.config.CopawWorkerImage
-		} else {
-			image = k.config.WorkerImage
-		}
+	if req.Runtime == RuntimeCopaw && k.config.CopawWorkerImage != "" {
+		image = k.config.CopawWorkerImage
+	} else {
+		image = k.config.WorkerImage
 	}
 	if image == "" {
 		return nil, fmt.Errorf("no worker image configured for kubernetes backend")
