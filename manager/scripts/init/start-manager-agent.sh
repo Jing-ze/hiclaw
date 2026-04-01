@@ -688,7 +688,13 @@ if container_api_available; then
     log "Container runtime socket detected at ${CONTAINER_SOCKET} — direct Worker creation enabled"
     export HICLAW_CONTAINER_RUNTIME="socket"
 elif [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
-    log "Cloud mode — Workers created via SAE API"
+    # No local Docker socket: worker lifecycle goes through HTTP (Orchestrator) or legacy SAE.
+    # Do not imply SAE when HICLAW_ORCHESTRATOR_URL is set (e.g. ACK/ACS + K8s workers).
+    if [ -n "${HICLAW_ORCHESTRATOR_URL:-}" ]; then
+        log "Cloud mode — Workers managed via Orchestrator (no local container socket)"
+    else
+        log "Cloud mode — Workers created via SAE API (set HICLAW_ORCHESTRATOR_URL to use Orchestrator)"
+    fi
     export HICLAW_CONTAINER_RUNTIME="cloud"
 else
     log "No container runtime found — Worker creation will output install commands"

@@ -1,6 +1,7 @@
 ARG HIGRESS_REGISTRY=higress-registry.cn-hangzhou.cr.aliyuncs.com
 
-FROM ${HIGRESS_REGISTRY}/higress/golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
+ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

@@ -84,6 +84,9 @@ func main() {
 	log.Printf("hiclaw-orchestrator listening on %s", cfg.ListenAddr)
 	log.Printf("Backends: workers=%d, gateways=%d, STS=%v, auth=%v",
 		len(workerBackends), len(gatewayBackends), stsService != nil, keyStore.AuthEnabled())
+	if len(gatewayBackends) == 0 && cfg.GWGatewayID == "" {
+		log.Printf("[WARN] APIG gateway backend disabled (gateways=0): set HICLAW_GW_GATEWAY_ID for POST /gateway/consumers")
+	}
 	if len(validator.AllowedRegistries) > 0 {
 		log.Printf("Allowed registries: %v", validator.AllowedRegistries)
 	}
@@ -110,13 +113,37 @@ func buildBackends(cfg *Config, cloudCreds backend.CloudCredentialProvider) ([]b
 	// Docker backend — always registered; Available() checks socket at runtime
 	workers = append(workers, backend.NewDockerBackend(cfg.DockerConfig(), cfg.ContainerPrefix))
 
-	// SAE backend — registered if worker image is configured
-	if cfg.SAEWorkerImage != "" && cloudCreds != nil {
-		sae, err := backend.NewSAEBackend(cloudCreds, cfg.SAEConfig(), cfg.ContainerPrefix)
-		if err != nil {
-			log.Printf("[WARN] Failed to create SAE backend: %v", err)
+	switch cfg.WorkerBackend {
+	case "k8s":
+		if k8s, err := backend.NewK8sBackend(cfg.K8sConfig(), cfg.ContainerPrefix); err != nil {
+			log.Printf("[WARN] Failed to create K8s backend: %v", err)
 		} else {
-			workers = append(workers, sae)
+			workers = append(workers, k8s)
+		}
+	case "sae":
+		if cfg.SAEWorkerImage == "" || cloudCreds == nil {
+			log.Printf("[WARN] SAE backend requested but SAE config is incomplete (HICLAW_SAE_WORKER_IMAGE / cloud creds)")
+		} else {
+			sae, err := backend.NewSAEBackend(cloudCreds, cfg.SAEConfig(), cfg.ContainerPrefix)
+			if err != nil {
+				log.Printf("[WARN] Failed to create SAE backend: %v", err)
+			} else {
+				workers = append(workers, sae)
+			}
+		}
+	default:
+		// Auto: SAE when fully configured, otherwise K8s (e.g. Helm on ACK/ACS).
+		if cfg.SAEWorkerImage != "" && cloudCreds != nil {
+			sae, err := backend.NewSAEBackend(cloudCreds, cfg.SAEConfig(), cfg.ContainerPrefix)
+			if err != nil {
+				log.Printf("[WARN] Failed to create SAE backend: %v", err)
+			} else {
+				workers = append(workers, sae)
+			}
+		} else if k8s, err := backend.NewK8sBackend(cfg.K8sConfig(), cfg.ContainerPrefix); err != nil {
+			log.Printf("[WARN] Failed to create K8s backend: %v", err)
+		} else {
+			workers = append(workers, k8s)
 		}
 	}
 
@@ -129,9 +156,6 @@ func buildBackends(cfg *Config, cloudCreds backend.CloudCredentialProvider) ([]b
 			gateways = append(gateways, apig)
 		}
 	}
-
-	// Future: K8s backend
-	// if cfg.K8sKubeconfig != "" { workers = append(workers, backend.NewK8sBackend(...)) }
 
 	return workers, gateways
 }

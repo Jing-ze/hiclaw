@@ -36,11 +36,19 @@ type Config struct {
 	GWModelAPIID string
 	GWEnvID      string
 
+	// Worker backend selection
+	WorkerBackend string
+
 	// STS
 	OSSBucket       string
 	STSRoleArn      string
 	OIDCProviderArn string
 	OIDCTokenFile   string
+
+	// Kubernetes Backend
+	K8sNamespace    string
+	K8sWorkerCPU    string
+	K8sWorkerMemory string
 
 	// Orchestrator URL (advertised to workers for STS refresh)
 	OrchestratorURL string
@@ -68,11 +76,19 @@ func LoadConfig() *Config {
 		GWGatewayID:  os.Getenv("HICLAW_GW_GATEWAY_ID"),
 		GWModelAPIID: os.Getenv("HICLAW_GW_MODEL_API_ID"),
 		GWEnvID:      os.Getenv("HICLAW_GW_ENV_ID"),
+		WorkerBackend: firstNonEmpty(
+			os.Getenv("HICLAW_WORKER_BACKEND"),
+			os.Getenv("HICLAW_ALIYUN_WORKER_BACKEND"),
+		),
 
 		OSSBucket:       os.Getenv("HICLAW_OSS_BUCKET"),
 		STSRoleArn:      os.Getenv("ALIBABA_CLOUD_ROLE_ARN"),
 		OIDCProviderArn: os.Getenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN"),
 		OIDCTokenFile:   os.Getenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE"),
+
+		K8sNamespace:    os.Getenv("HICLAW_K8S_NAMESPACE"),
+		K8sWorkerCPU:    envOrDefault("HICLAW_K8S_WORKER_CPU", "1000m"),
+		K8sWorkerMemory: envOrDefault("HICLAW_K8S_WORKER_MEMORY", "2Gi"),
 
 		OrchestratorURL: os.Getenv("HICLAW_ORCHESTRATOR_URL"),
 	}
@@ -120,6 +136,16 @@ func (c *Config) STSConfig() credentials.STSConfig {
 	}
 }
 
+func (c *Config) K8sConfig() backend.K8sConfig {
+	return backend.K8sConfig{
+		Namespace:        c.K8sNamespace,
+		WorkerImage:      envOrDefault("HICLAW_WORKER_IMAGE", "hiclaw/worker-agent:latest"),
+		CopawWorkerImage: envOrDefault("HICLAW_COPAW_WORKER_IMAGE", "hiclaw/copaw-worker:latest"),
+		WorkerCPU:        c.K8sWorkerCPU,
+		WorkerMemory:     c.K8sWorkerMemory,
+	}
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -134,4 +160,13 @@ func envOrDefaultInt(key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

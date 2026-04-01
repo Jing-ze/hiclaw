@@ -1,0 +1,272 @@
+package backend
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+type fakeK8sCoreClient struct {
+	pods map[string]map[string]*corev1.Pod
+}
+
+func newFakeK8sCoreClient(objects ...*corev1.Pod) *fakeK8sCoreClient {
+	client := &fakeK8sCoreClient{pods: map[string]map[string]*corev1.Pod{}}
+	for _, obj := range objects {
+		ns := obj.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		if client.pods[ns] == nil {
+			client.pods[ns] = map[string]*corev1.Pod{}
+		}
+		client.pods[ns][obj.Name] = obj.DeepCopy()
+	}
+	return client
+}
+
+func (f *fakeK8sCoreClient) Pods(namespace string) K8sPodClient {
+	if f.pods[namespace] == nil {
+		f.pods[namespace] = map[string]*corev1.Pod{}
+	}
+	return &fakeK8sPodClient{
+		namespace: namespace,
+		store:     f.pods[namespace],
+	}
+}
+
+type fakeK8sPodClient struct {
+	namespace string
+	store     map[string]*corev1.Pod
+}
+
+func (f *fakeK8sPodClient) Get(_ context.Context, name string, _ metav1.GetOptions) (*corev1.Pod, error) {
+	if pod, ok := f.store[name]; ok {
+		return pod.DeepCopy(), nil
+	}
+	return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
+}
+
+func (f *fakeK8sPodClient) Create(_ context.Context, pod *corev1.Pod, _ metav1.CreateOptions) (*corev1.Pod, error) {
+	if _, exists := f.store[pod.Name]; exists {
+		return nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "pods"}, pod.Name)
+	}
+	created := pod.DeepCopy()
+	if created.Namespace == "" {
+		created.Namespace = f.namespace
+	}
+	f.store[created.Name] = created
+	return created.DeepCopy(), nil
+}
+
+func (f *fakeK8sPodClient) Delete(_ context.Context, name string, _ metav1.DeleteOptions) error {
+	if _, exists := f.store[name]; !exists {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
+	}
+	delete(f.store, name)
+	return nil
+}
+
+func (f *fakeK8sPodClient) List(_ context.Context, opts metav1.ListOptions) (*corev1.PodList, error) {
+	list := &corev1.PodList{}
+	for _, pod := range f.store {
+		if opts.LabelSelector != "" && strings.Contains(opts.LabelSelector, "app=hiclaw-worker") && pod.Labels["app"] != "hiclaw-worker" {
+			continue
+		}
+		list.Items = append(list.Items, *pod.DeepCopy())
+	}
+	return list, nil
+}
+
+func newTestK8sBackend(objects ...*corev1.Pod) *K8sBackend {
+	client := newFakeK8sCoreClient(objects...)
+	return NewK8sBackendWithClient(client, K8sConfig{
+		Namespace:        "hiclaw",
+		WorkerImage:      "hiclaw/worker-agent:latest",
+		CopawWorkerImage: "hiclaw/copaw-worker:latest",
+		WorkerCPU:        "1000m",
+		WorkerMemory:     "2Gi",
+	}, "hiclaw-worker-")
+}
+
+func TestK8sCreate(t *testing.T) {
+	b := newTestK8sBackend()
+
+	result, err := b.Create(context.Background(), CreateRequest{
+		Name: "alice",
+		Env: map[string]string{
+			"HICLAW_MATRIX_URL": "http://matrix:6167",
+		},
+		OrchestratorURL: "http://orchestrator:2375",
+		WorkerAPIKey:    "worker-key",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if result.Backend != "k8s" {
+		t.Fatalf("expected k8s backend, got %s", result.Backend)
+	}
+	if result.Status != StatusStarting {
+		t.Fatalf("expected starting status, got %s", result.Status)
+	}
+
+	pod, err := b.client.Pods("hiclaw").Get(context.Background(), "hiclaw-worker-alice", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected worker pod to exist: %v", err)
+	}
+	if pod.Spec.ServiceAccountName != "" {
+		t.Fatalf("expected worker pod without service account, got %q", pod.Spec.ServiceAccountName)
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatalf("expected worker pod service account token automount disabled")
+	}
+	if len(pod.Spec.Volumes) != 0 {
+		t.Fatalf("expected no worker volumes, got %d", len(pod.Spec.Volumes))
+	}
+
+	envs := map[string]string{}
+	for _, env := range pod.Spec.Containers[0].Env {
+		envs[env.Name] = env.Value
+	}
+	if envs["HICLAW_RUNTIME"] != "aliyun" {
+		t.Fatalf("expected HICLAW_RUNTIME=aliyun, got %q", envs["HICLAW_RUNTIME"])
+	}
+	if envs["HICLAW_WORKER_API_KEY"] != "worker-key" {
+		t.Fatalf("expected injected worker api key, got %q", envs["HICLAW_WORKER_API_KEY"])
+	}
+	if envs["HICLAW_ORCHESTRATOR_URL"] != "http://orchestrator:2375" {
+		t.Fatalf("expected injected orchestrator URL, got %q", envs["HICLAW_ORCHESTRATOR_URL"])
+	}
+}
+
+func TestK8sCreateConflict(t *testing.T) {
+	existingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "hiclaw-worker-alice",
+			Namespace: "hiclaw",
+		},
+	}
+	b := newTestK8sBackend(existingPod)
+
+	_, err := b.Create(context.Background(), CreateRequest{Name: "alice"})
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+}
+
+func TestK8sStatus(t *testing.T) {
+	b := newTestK8sBackend(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "hiclaw-worker-bob",
+			Namespace: "hiclaw",
+			Labels: map[string]string{
+				"app":              "hiclaw-worker",
+				"hiclaw.io/worker": "bob",
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	})
+
+	result, err := b.Status(context.Background(), "bob")
+	if err != nil {
+		t.Fatalf("Status failed: %v", err)
+	}
+	if result.Status != StatusRunning {
+		t.Fatalf("expected running, got %s", result.Status)
+	}
+}
+
+func TestK8sStopAndDelete(t *testing.T) {
+	b := newTestK8sBackend(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "hiclaw-worker-carol",
+			Namespace: "hiclaw",
+		},
+	})
+
+	if err := b.Stop(context.Background(), "carol"); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	result, err := b.Status(context.Background(), "carol")
+	if err != nil {
+		t.Fatalf("Status failed: %v", err)
+	}
+	if result.Status != StatusNotFound {
+		t.Fatalf("expected not_found after stop, got %s", result.Status)
+	}
+}
+
+func TestK8sList(t *testing.T) {
+	b := newTestK8sBackend(
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "hiclaw-worker-w1",
+				Namespace: "hiclaw",
+				Labels: map[string]string{
+					"app":               "hiclaw-worker",
+					"hiclaw.io/worker":  "w1",
+					"hiclaw.io/runtime": "openclaw",
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "hiclaw-worker-w2",
+				Namespace: "hiclaw",
+				Labels: map[string]string{
+					"app":               "hiclaw-worker",
+					"hiclaw.io/worker":  "w2",
+					"hiclaw.io/runtime": "copaw",
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodPending},
+		},
+	)
+
+	workers, err := b.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("expected 2 workers, got %d", len(workers))
+	}
+}
+
+func TestNormalizeK8sPodPhase(t *testing.T) {
+	cases := []struct {
+		phase    corev1.PodPhase
+		expected WorkerStatus
+	}{
+		{corev1.PodRunning, StatusRunning},
+		{corev1.PodPending, StatusStarting},
+		{corev1.PodSucceeded, StatusStopped},
+		{corev1.PodFailed, StatusStopped},
+		{corev1.PodUnknown, StatusUnknown},
+	}
+	for _, tc := range cases {
+		if got := normalizeK8sPodPhase(tc.phase); got != tc.expected {
+			t.Fatalf("normalizeK8sPodPhase(%q)=%s, want %s", tc.phase, got, tc.expected)
+		}
+	}
+}
+
+func TestBuildHostAliases(t *testing.T) {
+	aliases := buildHostAliases([]string{
+		"matrix-local.hiclaw.io:10.0.0.1",
+		"aigw-local.hiclaw.io:10.0.0.1",
+		"bad-entry",
+	})
+	if len(aliases) != 1 {
+		t.Fatalf("expected 1 host alias, got %d", len(aliases))
+	}
+	if len(aliases[0].Hostnames) != 2 {
+		t.Fatalf("expected 2 hostnames, got %d", len(aliases[0].Hostnames))
+	}
+}

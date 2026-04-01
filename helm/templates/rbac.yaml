@@ -1,0 +1,20 @@
+{{- if .Values.serviceAccount.create }}
+{{- $rrsaWebhook := and .Values.manager.rrsa.enabled (eq (.Values.manager.rrsa.mode | default "manual") "webhook") .Values.manager.rrsa.roleName }}
+{{- $saExtraAnn := .Values.serviceAccount.annotations | default dict }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "hiclaw.serviceAccountName" . }}
+  namespace: {{ include "hiclaw.namespace" . }}
+  labels:
+    {{- include "hiclaw.labels" . | nindent 4 }}
+  {{- if or $rrsaWebhook (gt (len $saExtraAnn) 0) }}
+  annotations:
+    {{- if $rrsaWebhook }}
+    pod-identity.alibabacloud.com/role-name: {{ .Values.manager.rrsa.roleName | quote }}
+    {{- end }}
+    {{- range $k, $v := $saExtraAnn }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}

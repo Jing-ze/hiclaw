@@ -24,15 +24,15 @@ type SAEClient interface {
 
 // SAEConfig holds SAE backend configuration.
 type SAEConfig struct {
-	Region          string
-	NamespaceID     string
-	WorkerImage     string
+	Region           string
+	NamespaceID      string
+	WorkerImage      string
 	CopawWorkerImage string
-	VPCID           string
-	VSwitchID       string
-	SecurityGroupID string
-	CPU             int32
-	Memory          int32
+	VPCID            string
+	VSwitchID        string
+	SecurityGroupID  string
+	CPU              int32
+	Memory           int32
 }
 
 // SAEBackend manages worker lifecycle via Alibaba Cloud SAE.
@@ -81,9 +81,9 @@ func NewSAEBackendWithClient(client SAEClient, config SAEConfig, containerPrefix
 	}
 }
 
-func (s *SAEBackend) Name() string                        { return "sae" }
-func (s *SAEBackend) DeploymentMode() string               { return DeployCloud }
-func (s *SAEBackend) NeedsCredentialInjection() bool       { return true }
+func (s *SAEBackend) Name() string                   { return "sae" }
+func (s *SAEBackend) DeploymentMode() string         { return DeployCloud }
+func (s *SAEBackend) NeedsCredentialInjection() bool { return true }
 
 func (s *SAEBackend) Available(_ context.Context) bool {
 	return s.config.WorkerImage != "" && s.config.NamespaceID != ""
@@ -103,12 +103,10 @@ func (s *SAEBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 
 	// Build env vars
 	image := req.Image
-	if image == "" {
-		if req.Runtime == RuntimeCopaw && s.config.CopawWorkerImage != "" {
-			image = s.config.CopawWorkerImage
-		} else {
-			image = s.config.WorkerImage
-		}
+	if req.Runtime == RuntimeCopaw && s.config.CopawWorkerImage != "" {
+		image = s.config.CopawWorkerImage
+	} else {
+		image = s.config.WorkerImage
 	}
 
 	// SAE backend auto-injects runtime and credentials into worker env

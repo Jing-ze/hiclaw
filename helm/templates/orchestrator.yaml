@@ -1,0 +1,186 @@
+{{- $rrsaWebhook := include "hiclaw.orchestrator.rrsaWebhook" . }}
+{{- $rrsaManual := include "hiclaw.orchestrator.rrsaManual" . }}
+{{- $saExtraAnn := .Values.orchestrator.serviceAccount.annotations | default dict }}
+{{- $envSecret := include "hiclaw.orchestrator.envFromSecretName" . | trim }}
+{{- $mgrEnv := .Values.manager.env | default dict }}
+{{- $orchEnv := .Values.orchestrator.env | default dict }}
+{{- $runtime := coalesce (index $orchEnv "HICLAW_RUNTIME") (index $mgrEnv "HICLAW_RUNTIME") "aliyun" }}
+{{- $region := coalesce (index $orchEnv "HICLAW_REGION") (index $mgrEnv "HICLAW_REGION") "cn-hangzhou" }}
+{{- $gwGatewayID := coalesce (index $orchEnv "HICLAW_GW_GATEWAY_ID") (index $mgrEnv "HICLAW_GW_GATEWAY_ID") "" }}
+{{- if .Values.orchestrator.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "hiclaw.orchestrator.serviceAccountName" . }}
+  namespace: {{ include "hiclaw.namespace" . }}
+  labels:
+    {{- include "hiclaw.orchestrator.labels" . | nindent 4 }}
+  {{- if or $rrsaWebhook (gt (len $saExtraAnn) 0) }}
+  annotations:
+    {{- if $rrsaWebhook }}
+    pod-identity.alibabacloud.com/role-name: {{ .Values.orchestrator.rrsa.roleName | quote }}
+    {{- end }}
+    {{- range $k, $v := $saExtraAnn }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hiclaw.orchestrator.fullname" . }}
+  namespace: {{ include "hiclaw.namespace" . }}
+  labels:
+    {{- include "hiclaw.orchestrator.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.orchestrator.service.type }}
+  selector:
+    {{- include "hiclaw.orchestrator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.orchestrator.service.port }}
+      targetPort: {{ .Values.orchestrator.service.targetPort }}
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hiclaw.orchestrator.fullname" . }}
+  namespace: {{ include "hiclaw.namespace" . }}
+  labels:
+    {{- include "hiclaw.orchestrator.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "hiclaw.orchestrator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hiclaw.orchestrator.selectorLabels" . | nindent 8 }}
+      {{- with .Values.orchestrator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "hiclaw.orchestrator.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: orchestrator
+          image: {{ include "hiclaw.orchestrator.image" . }}
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.orchestrator.service.targetPort }}
+              protocol: TCP
+          {{- if $envSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ $envSecret | quote }}
+          {{- end }}
+          env:
+            - name: HICLAW_PROXY_LISTEN
+              value: {{ printf ":%v" .Values.orchestrator.service.targetPort | quote }}
+            - name: HICLAW_ORCHESTRATOR_URL
+              value: {{ include "hiclaw.orchestrator.serviceURL" . | quote }}
+            - name: HICLAW_RUNTIME
+              value: {{ $runtime | quote }}
+            - name: HICLAW_REGION
+              value: {{ $region | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: HICLAW_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HICLAW_WORKER_IMAGE
+              value: {{ printf "%s:%s" .Values.workerImage.repository (.Values.workerImage.tag | default "latest") | quote }}
+            - name: HICLAW_COPAW_WORKER_IMAGE
+              value: {{ printf "%s:%s" .Values.copawWorkerImage.repository (.Values.copawWorkerImage.tag | default "latest") | quote }}
+            - name: HICLAW_PROXY_CONTAINER_PREFIX
+              value: {{ .Values.orchestrator.containerPrefix | default "hiclaw-worker-" | quote }}
+            - name: TZ
+              value: {{ .Values.orchestrator.timezone | default "Asia/Shanghai" | quote }}
+            {{- if $gwGatewayID }}
+            - name: HICLAW_GW_GATEWAY_ID
+              value: {{ $gwGatewayID | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.allowedRegistries }}
+            - name: HICLAW_PROXY_ALLOWED_REGISTRIES
+              value: {{ join "," .Values.orchestrator.allowedRegistries | quote }}
+            {{- end }}
+            {{- range $k, $v := $orchEnv }}
+            {{- if $v }}
+            {{- if not (has $k (list "HICLAW_RUNTIME" "HICLAW_REGION" "HICLAW_GW_GATEWAY_ID")) }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $rrsaManual }}
+            - name: ALIBABA_CLOUD_ROLE_ARN
+              value: {{ .Values.orchestrator.rrsa.manual.roleArn | quote }}
+            - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
+              value: {{ include "hiclaw.rrsa.oidcProviderArn" . | quote }}
+            - name: ALIBABA_CLOUD_OIDC_TOKEN_FILE
+              value: {{ .Values.orchestrator.rrsa.manual.tokenFile | quote }}
+            {{- end }}
+          {{- if $rrsaManual }}
+          volumeMounts:
+            - name: rrsa-oidc-token
+              mountPath: {{ .Values.orchestrator.rrsa.manual.tokenMountPath | quote }}
+              readOnly: true
+          {{- end }}
+          {{- with .Values.orchestrator.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      {{- if $rrsaManual }}
+      volumes:
+        - name: rrsa-oidc-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: {{ .Values.orchestrator.rrsa.manual.expirationSeconds }}
+                  path: token
+      {{- end }}
+      {{- with .Values.orchestrator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

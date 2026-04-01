@@ -6,6 +6,8 @@ Record image-affecting changes to `manager/`, `worker/`, `openclaw-base/` here b
 
 **What's New**
 
+- **Helm on Alibaba Cloud ACK / ACS** — Added a Helm chart under `helm/` to deploy HiClaw in a single namespace: Manager, Orchestrator, Tuwunel (Matrix), and Element Web; RRSA (manual projected token or webhook); NAS persistence for **ACK** (static PV/PVC) vs **ACS** (CSI PVC); Orchestrator **Kubernetes** worker backend with shared runtime Secret, STS for OSS (`/credentials/sts`), default **public** OSS endpoint for workers with optional **`HICLAW_OSS_USE_INTERNAL_ENDPOINT`** on the orchestrator. See [helm/README.md](helm/README.md).
+
 - **Team, Human & Declarative Management (hiclaw-controller)** — Introduced the `hiclaw-controller` binary for declarative resource management. Define Teams, Humans, and Workers as YAML resources and apply them with `hiclaw apply`. Teams group Workers under a leader with shared goals; Humans bind Matrix users to Workers for direct interaction. The controller watches for resource changes and reconciles state automatically. Supports inline `identity`, `soul`, and `agents` fields for Worker configuration, eliminating the need for separate files.
 
 - **MCP Proxy Support** — New `mcp-proxy` feature allows proxying existing MCP servers through the HiClaw gateway, enabling Workers to access external MCP tools without direct network exposure.
