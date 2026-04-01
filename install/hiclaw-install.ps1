@@ -1864,6 +1864,9 @@ function Step-MatrixProvider {
                 $script:config.PG_DATABASE = if ($pgDatabase) { $pgDatabase } else { "synapse" }
             } else {
                 $script:config.PG_HOST = ""
+                $script:config.PG_PORT = "5432"
+                $script:config.PG_USER = "synapse"
+                $script:config.PG_DATABASE = "synapse"
             }
         } else {
             $script:config.PG_HOST = $env:HICLAW_PG_HOST
@@ -1871,6 +1874,27 @@ function Step-MatrixProvider {
             $script:config.PG_USER = if ($env:HICLAW_PG_USER) { $env:HICLAW_PG_USER } else { "synapse" }
             $script:config.PG_PASSWORD = $env:HICLAW_PG_PASSWORD
             $script:config.PG_DATABASE = if ($env:HICLAW_PG_DATABASE) { $env:HICLAW_PG_DATABASE } else { "synapse" }
+        }
+
+        # Validate external PostgreSQL connectivity (lightweight TCP check)
+        if ($script:config.PG_HOST) {
+            Write-Log "  Testing PostgreSQL connection..."
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $result = $tcp.BeginConnect($script:config.PG_HOST, [int]$script:config.PG_PORT, $null, $null)
+                $success = $result.AsyncWaitHandle.WaitOne(5000)
+                if ($success -and $tcp.Connected) {
+                    $tcp.EndConnect($result)
+                    Write-Log "  PostgreSQL connection OK"
+                } else {
+                    throw "Connection timed out"
+                }
+                $tcp.Close()
+            } catch {
+                Write-Host "  WARNING: Cannot reach PostgreSQL at $($script:config.PG_HOST):$($script:config.PG_PORT)" -ForegroundColor Yellow
+                Write-Host "  Installation will continue, but Synapse may fail to start." -ForegroundColor Yellow
+                Write-Host "  Please verify your PostgreSQL settings." -ForegroundColor Yellow
+            }
         }
     }
 }
@@ -2275,6 +2299,9 @@ function Install-Manager {
     # Start PostgreSQL sidecar if provider=synapse
     if ($config.MATRIX_PROVIDER -eq "synapse") {
         if (-not $config.PG_HOST) {
+            # Ensure network exists (PG sidecar needs it even without socket mount)
+            docker network inspect hiclaw-net *>$null
+            if ($LASTEXITCODE -ne 0) { docker network create hiclaw-net *>$null }
             Write-Log "Starting PostgreSQL for Synapse..."
             docker rm -f hiclaw-synapse-pg *>$null
             docker run -d --name hiclaw-synapse-pg `

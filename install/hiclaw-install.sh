@@ -2023,6 +2023,18 @@ step_matrix_provider() {
             fi
         fi
         export HICLAW_PG_HOST HICLAW_PG_PORT HICLAW_PG_USER HICLAW_PG_PASSWORD HICLAW_PG_DATABASE
+
+        # Validate external PostgreSQL connectivity (lightweight TCP check)
+        if [ -n "${HICLAW_PG_HOST}" ]; then
+            log "  Testing PostgreSQL connection..."
+            if timeout 5 bash -c "echo > /dev/tcp/${HICLAW_PG_HOST}/${HICLAW_PG_PORT:-5432}" 2>/dev/null; then
+                log "  PostgreSQL connection OK"
+            else
+                log "  WARNING: Cannot reach PostgreSQL at ${HICLAW_PG_HOST}:${HICLAW_PG_PORT:-5432}"
+                log "  Installation will continue, but Synapse may fail to start."
+                log "  Please verify your PostgreSQL settings."
+            fi
+        fi
     fi
 }
 
@@ -2545,6 +2557,8 @@ EOF
     # Start PostgreSQL sidecar if provider=synapse
     if [ "${HICLAW_MATRIX_PROVIDER:-tuwunel}" = "synapse" ]; then
         if [ -z "${HICLAW_PG_HOST}" ]; then
+            # Ensure network exists (PG sidecar needs it even without socket mount)
+            ${DOCKER_CMD} network inspect hiclaw-net >/dev/null 2>&1 || ${DOCKER_CMD} network create hiclaw-net
             log "Starting PostgreSQL for Synapse..."
             ${DOCKER_CMD} rm -f hiclaw-synapse-pg 2>/dev/null || true
             ${DOCKER_CMD} run -d \
