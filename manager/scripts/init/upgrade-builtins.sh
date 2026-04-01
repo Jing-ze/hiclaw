@@ -127,7 +127,7 @@ if [ -d "${WORKER_AGENT_SRC}" ] && mc alias ls hiclaw > /dev/null 2>&1; then
     # Publish AGENTS.md (pure builtin content without markers, for comparison)
     # We publish the marker-wrapped version so Workers can update their copy directly
     mc cp "${WORKER_AGENT_SRC}/AGENTS.md" \
-        "${HICLAW_STORAGE_PREFIX}/shared/builtins/worker/AGENTS.md" 2>/dev/null \
+        "${HICLAW_STORAGE_PREFIX}/shared/builtins/worker/AGENTS.md" >/dev/null 2>/dev/null \
         && log "  Published: shared/builtins/worker/AGENTS.md" \
         || log "  WARNING: Failed to publish AGENTS.md to MinIO (MinIO may not be ready yet)"
 
@@ -136,7 +136,7 @@ if [ -d "${WORKER_AGENT_SRC}" ] && mc alias ls hiclaw > /dev/null 2>&1; then
         for _skill_dir in "${WORKER_AGENT_SRC}/skills"/*/; do
             [ ! -d "${_skill_dir}" ] && continue
             _skill_name=$(basename "${_skill_dir}")
-            mc mirror "${_skill_dir}" \
+            mc mirror --quiet "${_skill_dir}" \
                 "${HICLAW_STORAGE_PREFIX}/shared/builtins/worker/skills/${_skill_name}/" --overwrite 2>/dev/null \
                 && log "  Published: shared/builtins/worker/skills/${_skill_name}/" \
                 || log "  WARNING: Failed to publish builtin skill ${_skill_name} to MinIO"
@@ -146,7 +146,7 @@ if [ -d "${WORKER_AGENT_SRC}" ] && mc alias ls hiclaw > /dev/null 2>&1; then
     # Publish all worker-skills directories to builtins so Workers can refresh assigned skills
     for _skill_dir in "${AGENT_SRC}/worker-skills"/*/; do
         _skill_name=$(basename "${_skill_dir}")
-        mc mirror "${_skill_dir}" \
+        mc mirror --quiet "${_skill_dir}" \
             "${HICLAW_STORAGE_PREFIX}/shared/builtins/worker/skills/${_skill_name}/" --overwrite 2>/dev/null \
             && log "  Published: shared/builtins/worker/skills/${_skill_name}/" \
             || log "  WARNING: Failed to publish worker-skill ${_skill_name} to MinIO"
@@ -198,7 +198,7 @@ if [ -d "${WORKER_AGENT_SRC}" ] && mc alias ls hiclaw > /dev/null 2>&1; then
                 for _skill_dir in "${_worker_agent_src}/skills"/*/; do
                     [ ! -d "${_skill_dir}" ] && continue
                     _skill_name=$(basename "${_skill_dir}")
-                    mc mirror "${_skill_dir}" \
+                    mc mirror --quiet "${_skill_dir}" \
                         "${HICLAW_STORAGE_PREFIX}/agents/${_worker_name}/skills/${_skill_name}/" --overwrite 2>/dev/null \
                         && log "    Updated builtin skill: ${_skill_name}" \
                         || log "    WARNING: Failed to sync builtin skill ${_skill_name}"
@@ -212,7 +212,7 @@ if [ -d "${WORKER_AGENT_SRC}" ] && mc alias ls hiclaw > /dev/null 2>&1; then
 
                 _skill_src="${WORKSPACE}/worker-skills/${_skill_name}"
                 if [ -d "${_skill_src}" ]; then
-                    mc mirror "${_skill_src}/" \
+                    mc mirror --quiet "${_skill_src}/" \
                         "${HICLAW_STORAGE_PREFIX}/agents/${_worker_name}/skills/${_skill_name}/" --overwrite 2>/dev/null \
                         && log "    Updated assigned skill: ${_skill_name}" \
                         || log "    WARNING: Failed to sync assigned skill ${_skill_name}"

@@ -135,9 +135,9 @@ if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
     mkdir -p "${HICLAW_FS}/shared" "${HICLAW_FS}/agents"
     log "Pulling workspace from OSS..."
     ensure_mc_credentials
-    mc mirror "${HICLAW_STORAGE_PREFIX}/manager/" /root/manager-workspace/ --overwrite 2>/dev/null || true
-    mc mirror "${HICLAW_STORAGE_PREFIX}/shared/" "${HICLAW_FS}/shared/" --overwrite 2>/dev/null || true
-    mc mirror "${HICLAW_STORAGE_PREFIX}/agents/" "${HICLAW_FS}/agents/" --overwrite 2>/dev/null || true
+    mc mirror --quiet "${HICLAW_STORAGE_PREFIX}/manager/" /root/manager-workspace/ --overwrite 2>/dev/null || true
+    mc mirror --quiet "${HICLAW_STORAGE_PREFIX}/shared/" "${HICLAW_FS}/shared/" --overwrite 2>/dev/null || true
+    mc mirror --quiet "${HICLAW_STORAGE_PREFIX}/agents/" "${HICLAW_FS}/agents/" --overwrite 2>/dev/null || true
     # Symlink hiclaw-fs into workspace for agent access
     ln -sfn "${HICLAW_FS}" /root/manager-workspace/hiclaw-fs
 fi
@@ -744,7 +744,7 @@ if [ -f "${REGISTRY_FILE}" ]; then
             [ -z "${_wname}" ] && continue
             _minio_path="${HICLAW_STORAGE_PREFIX}/agents/${_wname}/openclaw.json"
             _tmp_in="/tmp/openclaw-${_wname}-models-upgrade-in.json"
-            if mc cp "${_minio_path}" "${_tmp_in}" 2>/dev/null; then
+            if mc cp "${_minio_path}" "${_tmp_in}" >/dev/null 2>/dev/null; then
                 _tmp_out="/tmp/openclaw-${_wname}-models-upgrade-out.json"
                 # Idempotent merge: add missing known models, rebuild aliases, set e2ee.
                 # Always runs — jq deduplicates by model id, so re-runs are safe.
@@ -759,7 +759,7 @@ if [ -f "${REGISTRY_FILE}" ]; then
                     | .channels.matrix.encryption = $e2ee
                 ' "${_tmp_in}" > "${_tmp_out}" 2>/dev/null
                 if ! diff -q "${_tmp_in}" "${_tmp_out}" > /dev/null 2>&1; then
-                    if mc cp "${_tmp_out}" "${_minio_path}" 2>/dev/null; then
+                    if mc cp "${_tmp_out}" "${_minio_path}" >/dev/null 2>/dev/null; then
                         _new_count=$(jq '.models.providers["hiclaw-gateway"].models | length' "${_tmp_out}" 2>/dev/null)
                         log "Worker ${_wname}: upgraded openclaw.json (models: ${_new_count}, e2ee: ${MATRIX_E2EE_ENABLED})"
                     fi
@@ -786,7 +786,7 @@ if [ -f "${REGISTRY_FILE}" ]; then
                 if [ -n "${WORKER_PASSWORD}" ]; then
                     _tmp_pw="/tmp/matrix-pw-${_wname}"
                     echo -n "${WORKER_PASSWORD}" > "${_tmp_pw}"
-                    mc cp "${_tmp_pw}" "${HICLAW_STORAGE_PREFIX}/agents/${_wname}/credentials/matrix/password" 2>/dev/null \
+                    mc cp "${_tmp_pw}" "${HICLAW_STORAGE_PREFIX}/agents/${_wname}/credentials/matrix/password" >/dev/null 2>/dev/null \
                         && log "Worker ${_wname}: wrote Matrix password to MinIO (E2EE re-login fix)" \
                         || log "Worker ${_wname}: WARNING: failed to write Matrix password to MinIO"
                     rm -f "${_tmp_pw}"
@@ -943,7 +943,7 @@ log "Agent doc templates rendered"
 if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
     log "Syncing initial workspace to OSS..."
     ensure_mc_credentials
-    mc mirror /root/manager-workspace/ "${HICLAW_STORAGE_PREFIX}/manager/" --overwrite \
+    mc mirror --quiet /root/manager-workspace/ "${HICLAW_STORAGE_PREFIX}/manager/" --overwrite \
         --exclude ".openclaw/**" --exclude ".cache/**" 2>/dev/null || true
 
     # Local → OSS: change-triggered sync
@@ -952,7 +952,7 @@ if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
             CHANGED=$(find /root/manager-workspace/ -type f -newermt "15 seconds ago" 2>/dev/null | head -1)
             if [ -n "${CHANGED}" ]; then
                 ensure_mc_credentials 2>/dev/null || true
-                mc mirror /root/manager-workspace/ "${HICLAW_STORAGE_PREFIX}/manager/" --overwrite \
+                mc mirror --quiet /root/manager-workspace/ "${HICLAW_STORAGE_PREFIX}/manager/" --overwrite \
                     --exclude ".openclaw/**" --exclude ".cache/**" --exclude ".npm/**" \
                     --exclude ".local/**" --exclude ".mc/**" 2>/dev/null || true
             fi
@@ -966,8 +966,8 @@ if [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
         while true; do
             sleep 300
             ensure_mc_credentials 2>/dev/null || true
-            mc mirror "${HICLAW_STORAGE_PREFIX}/shared/" /root/hiclaw-fs/shared/ --overwrite --newer-than "5m" 2>/dev/null || true
-            mc mirror "${HICLAW_STORAGE_PREFIX}/agents/" /root/hiclaw-fs/agents/ --overwrite --newer-than "5m" 2>/dev/null || true
+            mc mirror --quiet "${HICLAW_STORAGE_PREFIX}/shared/" /root/hiclaw-fs/shared/ --overwrite --newer-than "5m" 2>/dev/null || true
+            mc mirror --quiet "${HICLAW_STORAGE_PREFIX}/agents/" /root/hiclaw-fs/agents/ --overwrite --newer-than "5m" 2>/dev/null || true
         done
     ) &
     log "OSS→Local sync started (every 5m, PID: $!)"
