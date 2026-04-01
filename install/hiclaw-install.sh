@@ -1016,7 +1016,7 @@ wait_matrix_ready() {
     log "$(msg install.wait_matrix "${timeout}")"
 
     while [ "${elapsed}" -lt "${timeout}" ]; do
-        if ${DOCKER_CMD} exec "${container}" curl -sf http://127.0.0.1:6167/_tuwunel/server_version >/dev/null 2>&1; then
+        if ${DOCKER_CMD} exec "${container}" curl -sf http://127.0.0.1:6167/_matrix/client/versions >/dev/null 2>&1; then
             log "$(msg install.wait_matrix.ok)"
             return 0
         fi
@@ -1267,7 +1267,7 @@ should_skip_step() {
             [ "${HICLAW_NON_INTERACTIVE}" = "1" ] && return 0
             [ "${HICLAW_QUICKSTART}" = "1" ] && return 0
             ;;
-        step_e2ee|step_idle|step_docker_proxy)
+        step_e2ee|step_idle|step_docker_proxy|step_matrix_provider)
             [ "${HICLAW_NON_INTERACTIVE}" = "1" ] && return 0
             [ "${HICLAW_QUICKSTART}" = "1" ] && [ "${HICLAW_UPGRADE}" != "1" ] && return 0
             ;;
@@ -1511,6 +1511,9 @@ step_existing() {
                 ${DOCKER_CMD} stop hiclaw-docker-proxy 2>/dev/null || true
                 ${DOCKER_CMD} rm hiclaw-docker-proxy 2>/dev/null || true
             fi
+            # Remove Synapse PostgreSQL sidecar
+            ${DOCKER_CMD} rm -f hiclaw-synapse-pg 2>/dev/null || true
+            ${DOCKER_CMD} volume rm hiclaw-synapse-pg-data 2>/dev/null || true
             if ${DOCKER_CMD} network ls --format '{{.Name}}' | grep -q "^hiclaw-net$"; then
                 log "$(msg install.reinstall.removing_network)"
                 ${DOCKER_CMD} network rm hiclaw-net 2>/dev/null || true
@@ -1960,6 +1963,69 @@ step_e2ee() {
     fi
 }
 
+step_matrix_provider() {
+    log ""
+    log "  Matrix Server Provider"
+    echo ""
+    echo "  Select which Matrix homeserver to use:"
+    echo ""
+    echo "  1) Tuwunel (default) — embedded, zero dependencies, uses RocksDB"
+    echo "  2) Synapse — sidecar container, requires PostgreSQL, supports horizontal scaling"
+    echo ""
+    if [ "${HICLAW_UPGRADE}" = "1" ] && [ -n "${HICLAW_MATRIX_PROVIDER}" ]; then
+        log "  Current: ${HICLAW_MATRIX_PROVIDER} (press Enter to keep)"
+        local _provider_choice
+        read -e -p "  Choose [1-2]: " _provider_choice
+        if [ "${_provider_choice}" = "b" ]; then STEP_RESULT="back"; return 0; fi
+        if [ -n "${_provider_choice}" ]; then
+            case "${_provider_choice}" in
+                2) HICLAW_MATRIX_PROVIDER="synapse" ;;
+                *) HICLAW_MATRIX_PROVIDER="tuwunel" ;;
+            esac
+        fi
+    elif [ -z "${HICLAW_MATRIX_PROVIDER+x}" ]; then
+        local _provider_choice
+        read -e -p "  Choose [1-2] (default: 1): " _provider_choice
+        if [ "${_provider_choice}" = "b" ]; then STEP_RESULT="back"; return 0; fi
+        _provider_choice="${_provider_choice:-1}"
+        case "${_provider_choice}" in
+            2) HICLAW_MATRIX_PROVIDER="synapse" ;;
+            *) HICLAW_MATRIX_PROVIDER="tuwunel" ;;
+        esac
+    fi
+    HICLAW_MATRIX_PROVIDER="${HICLAW_MATRIX_PROVIDER:-tuwunel}"
+    export HICLAW_MATRIX_PROVIDER
+    log "  Matrix provider: ${HICLAW_MATRIX_PROVIDER}"
+
+    # If Synapse selected, prompt for optional external PostgreSQL
+    if [ "${HICLAW_MATRIX_PROVIDER}" = "synapse" ]; then
+        if [ -z "${HICLAW_PG_HOST+x}" ]; then
+            echo ""
+            echo "  Synapse requires PostgreSQL."
+            echo "  Leave blank to auto-start a PostgreSQL container, or provide an external host."
+            echo ""
+            local _pg_host
+            read -e -p "  PostgreSQL host (blank = auto): " _pg_host
+            if [ -n "${_pg_host}" ]; then
+                HICLAW_PG_HOST="${_pg_host}"
+                local _pg_port _pg_user _pg_password _pg_database
+                read -e -p "  PostgreSQL port (default: 5432): " _pg_port
+                read -e -p "  PostgreSQL user (default: synapse): " _pg_user
+                read -e -s -p "  PostgreSQL password: " _pg_password
+                echo ""
+                read -e -p "  PostgreSQL database (default: synapse): " _pg_database
+                HICLAW_PG_PORT="${_pg_port:-5432}"
+                HICLAW_PG_USER="${_pg_user:-synapse}"
+                HICLAW_PG_PASSWORD="${_pg_password}"
+                HICLAW_PG_DATABASE="${_pg_database:-synapse}"
+            else
+                HICLAW_PG_HOST=""
+            fi
+        fi
+        export HICLAW_PG_HOST HICLAW_PG_PORT HICLAW_PG_USER HICLAW_PG_PASSWORD HICLAW_PG_DATABASE
+    fi
+}
+
 step_docker_proxy() {
     # Only relevant when socket mounting is enabled
     if [ "${HICLAW_MOUNT_SOCKET}" != "1" ]; then
@@ -2128,7 +2194,7 @@ install_manager() {
     # ── State machine ─────────────────────────────────────────────────────────
     local _STEPS=( step_lang step_mode step_version step_existing step_llm step_admin step_network \
                    step_ports step_domains step_github step_skills step_volume \
-                   step_workspace step_manager_runtime step_runtime step_e2ee step_docker_proxy step_idle step_hostshare )
+                   step_workspace step_manager_runtime step_runtime step_e2ee step_matrix_provider step_docker_proxy step_idle step_hostshare )
     local _STEP_HISTORY=()
     local _step_idx=0
     while [ "${_step_idx}" -lt "${#_STEPS[@]}" ]; do
@@ -2184,6 +2250,11 @@ install_manager() {
     HICLAW_MINIO_USER="${HICLAW_MINIO_USER:-${HICLAW_ADMIN_USER}}"
     HICLAW_MINIO_PASSWORD="${HICLAW_MINIO_PASSWORD:-${HICLAW_ADMIN_PASSWORD}}"
     HICLAW_MANAGER_GATEWAY_KEY="${HICLAW_MANAGER_GATEWAY_KEY:-$(generate_key)}"
+    HICLAW_MATRIX_PROVIDER="${HICLAW_MATRIX_PROVIDER:-tuwunel}"
+    if [ "${HICLAW_MATRIX_PROVIDER}" = "synapse" ]; then
+        HICLAW_SYNAPSE_SHARED_SECRET="${HICLAW_SYNAPSE_SHARED_SECRET:-$(generate_key)}"
+        HICLAW_PG_PASSWORD="${HICLAW_PG_PASSWORD:-$(generate_key)}"
+    fi
 
     # Write .env file
     ENV_FILE="${HICLAW_ENV_FILE:-${HOME}/hiclaw-manager.env}"
@@ -2267,6 +2338,15 @@ HICLAW_DEFAULT_WORKER_RUNTIME=${HICLAW_DEFAULT_WORKER_RUNTIME:-openclaw}
 
 # Matrix E2EE (0=disabled, 1=enabled; default: 0)
 HICLAW_MATRIX_E2EE=${HICLAW_MATRIX_E2EE:-0}
+
+# Matrix provider (tuwunel | synapse; default: tuwunel)
+HICLAW_MATRIX_PROVIDER=${HICLAW_MATRIX_PROVIDER:-tuwunel}
+HICLAW_SYNAPSE_SHARED_SECRET=${HICLAW_SYNAPSE_SHARED_SECRET:-}
+HICLAW_PG_HOST=${HICLAW_PG_HOST:-}
+HICLAW_PG_PORT=${HICLAW_PG_PORT:-5432}
+HICLAW_PG_USER=${HICLAW_PG_USER:-synapse}
+HICLAW_PG_PASSWORD=${HICLAW_PG_PASSWORD:-}
+HICLAW_PG_DATABASE=${HICLAW_PG_DATABASE:-synapse}
 
 # Docker API proxy (0=disabled, 1=enabled; default: 1)
 HICLAW_DOCKER_PROXY=${HICLAW_DOCKER_PROXY:-1}
@@ -2460,6 +2540,40 @@ EOF
             "${_proxy_image}"
         PROXY_ARGS="-e HICLAW_CONTAINER_API=http://hiclaw-docker-proxy:2375"
         SOCKET_MOUNT_ARGS=""  # Manager no longer needs direct socket access
+    fi
+
+    # Start PostgreSQL sidecar if provider=synapse
+    if [ "${HICLAW_MATRIX_PROVIDER:-tuwunel}" = "synapse" ]; then
+        if [ -z "${HICLAW_PG_HOST}" ]; then
+            log "Starting PostgreSQL for Synapse..."
+            ${DOCKER_CMD} rm -f hiclaw-synapse-pg 2>/dev/null || true
+            ${DOCKER_CMD} run -d \
+                --name hiclaw-synapse-pg \
+                --network hiclaw-net \
+                -e POSTGRES_USER="${HICLAW_PG_USER:-synapse}" \
+                -e POSTGRES_PASSWORD="${HICLAW_PG_PASSWORD}" \
+                -e POSTGRES_DB="${HICLAW_PG_DATABASE:-synapse}" \
+                -e POSTGRES_INITDB_ARGS="--encoding=UTF-8 --locale=C" \
+                -v hiclaw-synapse-pg-data:/var/lib/postgresql/data \
+                --restart unless-stopped \
+                postgres:15-alpine
+
+            # Wait for PostgreSQL to be ready
+            log "Waiting for PostgreSQL to be ready..."
+            local _pg_elapsed=0
+            while [ "${_pg_elapsed}" -lt 60 ]; do
+                if ${DOCKER_CMD} exec hiclaw-synapse-pg pg_isready -U "${HICLAW_PG_USER:-synapse}" >/dev/null 2>&1; then
+                    log "PostgreSQL is ready"
+                    break
+                fi
+                sleep 2
+                _pg_elapsed=$((_pg_elapsed + 2))
+            done
+            if [ "${_pg_elapsed}" -ge 60 ]; then
+                error "PostgreSQL did not become ready within 60s"
+            fi
+        fi
+        log "PostgreSQL ready for Synapse"
     fi
 
     # Build port binding args (127.0.0.1 prefix for local-only mode)

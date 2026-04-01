@@ -741,7 +741,7 @@ function Wait-MatrixReady {
 
     while ($elapsed -lt $Timeout) {
         try {
-            $result = docker exec $Container curl -sf http://127.0.0.1:6167/_tuwunel/server_version 2>$null
+            $result = docker exec $Container curl -sf http://127.0.0.1:6167/_matrix/client/versions 2>$null
             if ($result) {
                 Write-Log (Get-Msg "install.wait_matrix.ok")
                 return $true
@@ -829,6 +829,15 @@ HICLAW_DEFAULT_WORKER_RUNTIME=$($Config.DEFAULT_WORKER_RUNTIME)
 
 # Matrix E2EE (0=disabled, 1=enabled; default: 0)
 HICLAW_MATRIX_E2EE=$($Config.MATRIX_E2EE)
+
+# Matrix provider (tuwunel | synapse; default: tuwunel)
+HICLAW_MATRIX_PROVIDER=$($Config.MATRIX_PROVIDER)
+HICLAW_SYNAPSE_SHARED_SECRET=$($Config.SYNAPSE_SHARED_SECRET)
+HICLAW_PG_HOST=$($Config.PG_HOST)
+HICLAW_PG_PORT=$($Config.PG_PORT)
+HICLAW_PG_USER=$($Config.PG_USER)
+HICLAW_PG_PASSWORD=$($Config.PG_PASSWORD)
+HICLAW_PG_DATABASE=$($Config.PG_DATABASE)
 
 # Docker API proxy (0=disabled, 1=enabled; default: 1)
 HICLAW_DOCKER_PROXY=$($Config.DOCKER_PROXY)
@@ -1145,7 +1154,7 @@ function Test-ShouldSkipStep {
             if ($script:HICLAW_QUICKSTART) { return $true }
             return $false
         }
-        { $_ -in @("Step-E2ee", "Step-Idle", "Step-DockerProxy") } {
+        { $_ -in @("Step-E2ee", "Step-Idle", "Step-DockerProxy", "Step-MatrixProvider") } {
             if ($script:HICLAW_NON_INTERACTIVE) { return $true }
             if ($script:HICLAW_QUICKSTART -and -not $script:HICLAW_UPGRADE) { return $true }
             return $false
@@ -1356,6 +1365,9 @@ function Step-Existing {
                 docker rm $_ *>$null
                 Write-Log (Get-Msg "install.reinstall.removed_worker" -f $_)
             }
+            # Remove Synapse PostgreSQL sidecar
+            docker rm -f hiclaw-synapse-pg *>$null
+            docker volume rm hiclaw-synapse-pg-data *>$null
             if (docker volume ls -q 2>$null | Select-String "^hiclaw-data$") {
                 Write-Log (Get-Msg "install.reinstall.removing_volume")
                 docker volume rm hiclaw-data *>$null
@@ -1801,6 +1813,68 @@ function Step-E2ee {
     }
 }
 
+function Step-MatrixProvider {
+    Write-Host ""
+    Write-Log "  Matrix Server Provider"
+    Write-Host ""
+    Write-Host "  Select which Matrix homeserver to use:"
+    Write-Host ""
+    Write-Host "  1) Tuwunel (default) - embedded, zero dependencies, uses RocksDB"
+    Write-Host "  2) Synapse - sidecar container, requires PostgreSQL, supports horizontal scaling"
+    Write-Host ""
+
+    if ($script:HICLAW_UPGRADE -and $env:HICLAW_MATRIX_PROVIDER) {
+        Write-Log "  Current: $($env:HICLAW_MATRIX_PROVIDER) (press Enter to keep)"
+        $providerChoice = Read-Host "  Choose [1-2]"
+        if ($providerChoice -eq "b") { $script:StepResult = "back"; return }
+        if ($providerChoice) {
+            $script:config.MATRIX_PROVIDER = if ($providerChoice -eq "2") { "synapse" } else { "tuwunel" }
+        } else {
+            $script:config.MATRIX_PROVIDER = $env:HICLAW_MATRIX_PROVIDER
+        }
+    } elseif (-not $env:HICLAW_MATRIX_PROVIDER) {
+        $providerChoice = Read-Host "  Choose [1-2] (default: 1)"
+        if ($providerChoice -eq "b") { $script:StepResult = "back"; return }
+        $providerChoice = if ($providerChoice) { $providerChoice } else { "1" }
+        $script:config.MATRIX_PROVIDER = if ($providerChoice -eq "2") { "synapse" } else { "tuwunel" }
+    } else {
+        $script:config.MATRIX_PROVIDER = $env:HICLAW_MATRIX_PROVIDER
+    }
+
+    if (-not $script:config.MATRIX_PROVIDER) { $script:config.MATRIX_PROVIDER = "tuwunel" }
+    Write-Log "  Matrix provider: $($script:config.MATRIX_PROVIDER)"
+
+    # If Synapse selected, prompt for optional external PostgreSQL
+    if ($script:config.MATRIX_PROVIDER -eq "synapse") {
+        if (-not $env:HICLAW_PG_HOST) {
+            Write-Host ""
+            Write-Host "  Synapse requires PostgreSQL."
+            Write-Host "  Leave blank to auto-start a PostgreSQL container, or provide an external host."
+            Write-Host ""
+            $pgHost = Read-Host "  PostgreSQL host (blank = auto)"
+            if ($pgHost) {
+                $script:config.PG_HOST = $pgHost
+                $pgPort = Read-Host "  PostgreSQL port (default: 5432)"
+                $pgUser = Read-Host "  PostgreSQL user (default: synapse)"
+                $pgPassword = Read-Host "  PostgreSQL password" -MaskInput
+                $pgDatabase = Read-Host "  PostgreSQL database (default: synapse)"
+                $script:config.PG_PORT = if ($pgPort) { $pgPort } else { "5432" }
+                $script:config.PG_USER = if ($pgUser) { $pgUser } else { "synapse" }
+                $script:config.PG_PASSWORD = $pgPassword
+                $script:config.PG_DATABASE = if ($pgDatabase) { $pgDatabase } else { "synapse" }
+            } else {
+                $script:config.PG_HOST = ""
+            }
+        } else {
+            $script:config.PG_HOST = $env:HICLAW_PG_HOST
+            $script:config.PG_PORT = if ($env:HICLAW_PG_PORT) { $env:HICLAW_PG_PORT } else { "5432" }
+            $script:config.PG_USER = if ($env:HICLAW_PG_USER) { $env:HICLAW_PG_USER } else { "synapse" }
+            $script:config.PG_PASSWORD = $env:HICLAW_PG_PASSWORD
+            $script:config.PG_DATABASE = if ($env:HICLAW_PG_DATABASE) { $env:HICLAW_PG_DATABASE } else { "synapse" }
+        }
+    }
+}
+
 function Step-DockerProxy {
     if (-not $script:HICLAW_MOUNT_SOCKET) {
         $script:config.DOCKER_PROXY = "0"
@@ -2025,7 +2099,7 @@ function Install-Manager {
     # ── State machine ─────────────────────────────────────────────────────────
     $_steps = @("Step-Lang", "Step-Mode", "Step-Existing", "Step-Llm", "Step-Admin",
                 "Step-Network", "Step-Ports", "Step-Domains", "Step-Github", "Step-Skills",
-                "Step-Volume", "Step-Workspace", "Step-ManagerRuntime", "Step-Runtime", "Step-E2ee", "Step-DockerProxy", "Step-Idle",
+                "Step-Volume", "Step-Workspace", "Step-ManagerRuntime", "Step-Runtime", "Step-E2ee", "Step-MatrixProvider", "Step-DockerProxy", "Step-Idle",
                 "Step-Hostshare")
     $_stepHistory = [System.Collections.Generic.List[int]]::new()
     $_stepIdx = 0
@@ -2109,6 +2183,11 @@ function Install-Manager {
     $config.MINIO_USER = if ($env:HICLAW_MINIO_USER) { $env:HICLAW_MINIO_USER } else { $config.ADMIN_USER }
     $config.MINIO_PASSWORD = if ($env:HICLAW_MINIO_PASSWORD) { $env:HICLAW_MINIO_PASSWORD } else { $config.ADMIN_PASSWORD }
     $config.MANAGER_GATEWAY_KEY = if ($env:HICLAW_MANAGER_GATEWAY_KEY) { $env:HICLAW_MANAGER_GATEWAY_KEY } else { New-RandomKey }
+    if (-not $config.MATRIX_PROVIDER) { $config.MATRIX_PROVIDER = if ($env:HICLAW_MATRIX_PROVIDER) { $env:HICLAW_MATRIX_PROVIDER } else { "tuwunel" } }
+    if ($config.MATRIX_PROVIDER -eq "synapse") {
+        $config.SYNAPSE_SHARED_SECRET = if ($env:HICLAW_SYNAPSE_SHARED_SECRET) { $env:HICLAW_SYNAPSE_SHARED_SECRET } else { New-RandomKey }
+        if (-not $config.PG_PASSWORD) { $config.PG_PASSWORD = if ($env:HICLAW_PG_PASSWORD) { $env:HICLAW_PG_PASSWORD } else { New-RandomKey } }
+    }
 
     # Store additional config
     $config.LANGUAGE = $script:HICLAW_LANGUAGE
@@ -2191,6 +2270,40 @@ function Install-Manager {
                 }
             }
         }
+    }
+
+    # Start PostgreSQL sidecar if provider=synapse
+    if ($config.MATRIX_PROVIDER -eq "synapse") {
+        if (-not $config.PG_HOST) {
+            Write-Log "Starting PostgreSQL for Synapse..."
+            docker rm -f hiclaw-synapse-pg *>$null
+            docker run -d --name hiclaw-synapse-pg `
+                --network hiclaw-net `
+                -e "POSTGRES_USER=$($config.PG_USER)" `
+                -e "POSTGRES_PASSWORD=$($config.PG_PASSWORD)" `
+                -e "POSTGRES_DB=$($config.PG_DATABASE)" `
+                -e "POSTGRES_INITDB_ARGS=--encoding=UTF-8 --locale=C" `
+                -v hiclaw-synapse-pg-data:/var/lib/postgresql/data `
+                --restart unless-stopped `
+                postgres:15-alpine
+
+            Write-Log "Waiting for PostgreSQL to be ready..."
+            $pgElapsed = 0
+            while ($pgElapsed -lt 60) {
+                $pgReady = docker exec hiclaw-synapse-pg pg_isready -U $config.PG_USER 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Log "PostgreSQL is ready"
+                    break
+                }
+                Start-Sleep -Seconds 2
+                $pgElapsed += 2
+            }
+            if ($pgElapsed -ge 60) {
+                Write-Error "PostgreSQL did not become ready within 60s"
+                exit 1
+            }
+        }
+        Write-Log "PostgreSQL ready for Synapse"
     }
 
     # Port mappings
