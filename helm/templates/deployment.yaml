@@ -56,6 +56,9 @@ spec:
             {{- if and (include "hiclaw.isCloudPlatform" .) (not (index (.Values.manager.env | default dict) "HICLAW_RUNTIME")) }}
             - name: HICLAW_RUNTIME
               value: "aliyun"
+            {{- else if (include "hiclaw.isGenericK8s" .) }}
+            - name: HICLAW_RUNTIME
+              value: "k8s"
             {{- end }}
             {{- if not .Values.manager.envFromSecret }}
             - name: HICLAW_MATRIX_URL
@@ -88,7 +91,13 @@ spec:
             {{- if .Values.higress.enabled }}
             - name: HICLAW_AI_GATEWAY_URL
               value: {{ include "hiclaw.higress.gatewayURL" . | quote }}
+            - name: HICLAW_HIGRESS_CONSOLE_URL
+              value: {{ printf "http://higress-console.%s.svc.cluster.local:8080" (include "hiclaw.namespace" .) | quote }}
             {{- end }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- end }}
             {{- if $rrsaManual }}
             - name: ALIBABA_CLOUD_ROLE_ARN

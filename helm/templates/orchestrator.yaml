@@ -4,7 +4,7 @@
 {{- $envSecret := include "hiclaw.orchestrator.envFromSecretName" . | trim }}
 {{- $mgrEnv := .Values.manager.env | default dict }}
 {{- $orchEnv := .Values.orchestrator.env | default dict }}
-{{- $runtimeDefault := ternary "aliyun" "" (eq (include "hiclaw.isCloudPlatform" .) "true") }}
+{{- $runtimeDefault := ternary "aliyun" "k8s" (eq (include "hiclaw.isCloudPlatform" .) "true") }}
 {{- $runtime := coalesce (index $orchEnv "HICLAW_RUNTIME") (index $mgrEnv "HICLAW_RUNTIME") $runtimeDefault }}
 {{- $regionDefault := ternary "cn-hangzhou" "" (eq (include "hiclaw.isCloudPlatform" .) "true") }}
 {{- $region := coalesce (index $orchEnv "HICLAW_REGION") (index $mgrEnv "HICLAW_REGION") $regionDefault }}
@@ -110,9 +110,17 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: HICLAW_WORKER_IMAGE
-              value: {{ printf "%s:%s" .Values.workerImage.repository (.Values.workerImage.tag | default "latest") | quote }}
+              {{- $workerTag := .Values.workerImage.tag | default "latest" }}
+              {{- if (include "hiclaw.isCloudPlatform" .) }}
+              {{- $workerTag = include "hiclaw.imageTagSuffix" $workerTag }}
+              {{- end }}
+              value: {{ printf "%s:%s" .Values.workerImage.repository $workerTag | quote }}
             - name: HICLAW_COPAW_WORKER_IMAGE
-              value: {{ printf "%s:%s" .Values.copawWorkerImage.repository (.Values.copawWorkerImage.tag | default "latest") | quote }}
+              {{- $copawTag := .Values.copawWorkerImage.tag | default "latest" }}
+              {{- if (include "hiclaw.isCloudPlatform" .) }}
+              {{- $copawTag = include "hiclaw.imageTagSuffix" $copawTag }}
+              {{- end }}
+              value: {{ printf "%s:%s" .Values.copawWorkerImage.repository $copawTag | quote }}
             - name: HICLAW_PROXY_CONTAINER_PREFIX
               value: {{ index (.Values.orchestrator.env | default dict) "HICLAW_PROXY_CONTAINER_PREFIX" | default .Values.orchestrator.containerPrefix | default "hiclaw-worker-" | quote }}
             - name: TZ

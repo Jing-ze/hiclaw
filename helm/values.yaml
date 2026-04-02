@@ -39,20 +39,20 @@ imagePullSecrets: []
 
 workerImage:
   repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-worker
-  tag: v1.0.9-rc-k8s_accelerated
+  tag: v1.0.9-rc-k8s
 
 copawWorkerImage:
   repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-copaw-worker
-  tag: v1.0.9-rc-k8s_accelerated
+  tag: v1.0.9-rc-k8s
 
 workerRuntime: "openclaw"
 
 manager:
   deploymentName: ""
   image:
-    repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-manager
-    pullPolicy: IfNotPresent
-    tag: v1.0.9-rc-k8s_accelerated
+    repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-manager-aliyun
+    pullPolicy: Always
+    tag: v1.0.9-rc-k8s
   healthCheck:
     enabled: true
     type: "tcp"                 # "tcp" or "http"
@@ -92,7 +92,7 @@ orchestrator:
   image:
     repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-orchestrator
     pullPolicy: IfNotPresent
-    tag: v1.0.0-rc-k8s_accelerated
+    tag: v1.0.0-rc-k8s
   service:
     type: ClusterIP
     port: 2375

@@ -52,19 +52,35 @@ if [ "${HICLAW_RUNTIME}" != "aliyun" ]; then
         fi
     fi
 
-    # Add local domains to /etc/hosts
-    HOSTS_DOMAINS="${MATRIX_DOMAIN%%:*} ${HICLAW_MATRIX_CLIENT_DOMAIN:-matrix-client-local.hiclaw.io} ${AI_GATEWAY_DOMAIN} ${HICLAW_FS_DOMAIN:-fs-local.hiclaw.io}"
-    if ! grep -q "${AI_GATEWAY_DOMAIN}" /etc/hosts 2>/dev/null; then
-        echo "127.0.0.1 ${HOSTS_DOMAINS}" >> /etc/hosts
-        log "Added local domains to /etc/hosts"
+    # Add local domains to /etc/hosts (all-in-one mode only, skip in k8s)
+    if [ -z "${HICLAW_AI_GATEWAY_URL:-}" ] || [ "${HICLAW_AI_GATEWAY_URL}" = "http://127.0.0.1:8080" ]; then
+        HOSTS_DOMAINS="${MATRIX_DOMAIN%%:*} ${HICLAW_MATRIX_CLIENT_DOMAIN:-matrix-client-local.hiclaw.io} ${AI_GATEWAY_DOMAIN} ${HICLAW_FS_DOMAIN:-fs-local.hiclaw.io}"
+        if ! grep -q "${AI_GATEWAY_DOMAIN}" /etc/hosts 2>/dev/null; then
+            echo "127.0.0.1 ${HOSTS_DOMAINS}" >> /etc/hosts
+            log "Added local domains to /etc/hosts"
+        fi
     fi
 
-    # Wait for local infrastructure
-    waitForService "Higress Gateway" "127.0.0.1" 8080 180
-    waitForService "Higress Console" "127.0.0.1" 8001 180
-    waitForService "Tuwunel" "127.0.0.1" 6167 120
-    waitForHTTP "Tuwunel Matrix API" "${HICLAW_MATRIX_SERVER}/_tuwunel/server_version" 120
-    waitForService "MinIO" "127.0.0.1" 9000 120
+    # Wait for local infrastructure (all-in-one) or remote services (k8s)
+    if [ -n "${HICLAW_AI_GATEWAY_URL:-}" ] && [ "${HICLAW_AI_GATEWAY_URL}" != "http://127.0.0.1:8080" ]; then
+        # K8s mode: services are remote, wait via URL
+        waitForHTTP "AI Gateway" "${HICLAW_AI_GATEWAY_URL}/" 180
+    else
+        # All-in-one mode: services on localhost
+        waitForService "Higress Gateway" "127.0.0.1" 8080 180
+        waitForService "Higress Console" "127.0.0.1" 8001 180
+    fi
+    if [ -n "${HICLAW_MATRIX_SERVER:-}" ] && ! echo "${HICLAW_MATRIX_SERVER}" | grep -q '127.0.0.1'; then
+        waitForHTTP "Tuwunel Matrix API" "${HICLAW_MATRIX_SERVER}/_tuwunel/server_version" 120
+    else
+        waitForService "Tuwunel" "127.0.0.1" 6167 120
+        waitForHTTP "Tuwunel Matrix API" "${HICLAW_MATRIX_SERVER}/_tuwunel/server_version" 120
+    fi
+    if [ -n "${HICLAW_MINIO_ENDPOINT:-}" ] && ! echo "${HICLAW_MINIO_ENDPOINT}" | grep -q '127.0.0.1'; then
+        waitForHTTP "MinIO" "${HICLAW_MINIO_ENDPOINT}/minio/health/ready" 120
+    else
+        waitForService "MinIO" "127.0.0.1" 9000 120
+    fi
 else
     # Cloud mode: wait for external Tuwunel
     log "Waiting for Tuwunel Matrix server at ${HICLAW_MATRIX_SERVER}..."
@@ -148,18 +164,31 @@ else
 fi
 
 # Local mode: wait for mc mirror initialization (shared + worker data in /root/hiclaw-fs/)
+# In k8s mode (remote MinIO), skip this — MinIO is a separate pod, no .initialized file.
 if [ "${HICLAW_RUNTIME}" != "aliyun" ]; then
-    log "Waiting for MinIO storage initialization..."
-    _minio_wait=0
-    while [ ! -f /root/hiclaw-fs/.initialized ]; do
-        sleep 2
-        _minio_wait=$(( _minio_wait + 1 ))
-        if [ "${_minio_wait}" -ge 60 ]; then
-            log "ERROR: MinIO storage initialization timed out after 120s"
-            exit 1
-        fi
-    done
-    log "MinIO storage initialized"
+    if [ -z "${HICLAW_MINIO_ENDPOINT:-}" ] || echo "${HICLAW_MINIO_ENDPOINT}" | grep -q '127.0.0.1'; then
+        # All-in-one mode: wait for local MinIO init script to finish
+        log "Waiting for MinIO storage initialization..."
+        _minio_wait=0
+        while [ ! -f /root/hiclaw-fs/.initialized ]; do
+            sleep 2
+            _minio_wait=$(( _minio_wait + 1 ))
+            if [ "${_minio_wait}" -ge 60 ]; then
+                log "ERROR: MinIO storage initialization timed out after 120s"
+                exit 1
+            fi
+        done
+        log "MinIO storage initialized"
+    else
+        # K8s mode: MinIO is remote, initialize mc alias and create bucket
+        log "Configuring mc for remote MinIO at ${HICLAW_MINIO_ENDPOINT}..."
+        mc alias set minio "${HICLAW_MINIO_ENDPOINT}" "${HICLAW_MINIO_ACCESS_KEY}" "${HICLAW_MINIO_SECRET_KEY}" --api S3v4 2>/dev/null || true
+        mc mb "minio/${HICLAW_MINIO_BUCKET}" 2>/dev/null || true
+        # Set HICLAW_STORAGE_PREFIX for mc commands
+        export HICLAW_STORAGE_PREFIX="minio/${HICLAW_MINIO_BUCKET}"
+        mkdir -p /root/hiclaw-fs/shared /root/hiclaw-fs/agents
+        log "Remote MinIO configured (bucket: ${HICLAW_MINIO_BUCKET})"
+    fi
 fi
 
 # ============================================================
@@ -218,10 +247,18 @@ log "Manager Matrix token obtained (token prefix: ${MANAGER_TOKEN:0:10}...)"
 if [ "${HICLAW_RUNTIME}" != "aliyun" ]; then
     COOKIE_FILE="/tmp/higress-session-cookie"
 
-    log "Waiting for Higress Console to be fully ready and initializing admin..."
+    # Determine Higress Console URL: localhost for all-in-one, remote for k8s
+    if [ -n "${HICLAW_AI_GATEWAY_URL:-}" ] && [ "${HICLAW_AI_GATEWAY_URL}" != "http://127.0.0.1:8080" ]; then
+        # K8s mode: derive console URL from gateway URL (same host, port 8080)
+        _HIGRESS_CONSOLE_URL="${HICLAW_HIGRESS_CONSOLE_URL:-http://higress-console.${POD_NAMESPACE:-hiclaw}.svc.cluster.local:8080}"
+    else
+        _HIGRESS_CONSOLE_URL="http://127.0.0.1:8001"
+    fi
+
+    log "Waiting for Higress Console at ${_HIGRESS_CONSOLE_URL} to be fully ready and initializing admin..."
     INIT_DONE=false
     for i in $(seq 1 90); do
-        INIT_RESULT=$(curl -s -X POST http://127.0.0.1:8001/system/init \
+        INIT_RESULT=$(curl -s -X POST ${_HIGRESS_CONSOLE_URL}/system/init \
             -H 'Content-Type: application/json' \
             -d '{"adminUser":{"name":"'"${HICLAW_ADMIN_USER}"'","password":"'"${HICLAW_ADMIN_PASSWORD}"'","displayName":"'"${HICLAW_ADMIN_USER}"'"}}' 2>/dev/null) || true
         if echo "${INIT_RESULT}" | grep -qE '"success":true|already.?init' 2>/dev/null; then
@@ -244,7 +281,7 @@ if [ "${HICLAW_RUNTIME}" != "aliyun" ]; then
     log "Logging into Higress Console..."
     LOGIN_OK=false
     for i in $(seq 1 10); do
-        HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8001/session/login \
+        HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST ${_HIGRESS_CONSOLE_URL}/session/login \
             -H 'Content-Type: application/json' \
             -c "${COOKIE_FILE}" \
             -d '{"username":"'"${HICLAW_ADMIN_USER}"'","password":"'"${HICLAW_ADMIN_PASSWORD}"'"}' 2>/dev/null) || true
@@ -262,18 +299,18 @@ if [ "${HICLAW_RUNTIME}" != "aliyun" ]; then
     fi
     log "Higress Console login successful"
 
-    VERIFY_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/v1/consumers -b "${COOKIE_FILE}" 2>/dev/null) || true
+    VERIFY_CODE=$(curl -s -o /dev/null -w '%{http_code}' ${_HIGRESS_CONSOLE_URL}/v1/consumers -b "${COOKIE_FILE}" 2>/dev/null) || true
     if [ "${VERIFY_CODE}" = "200" ]; then
         log "Console session verified (cookie valid)"
     else
         log "WARNING: Console session may be invalid (verify returned HTTP ${VERIFY_CODE})"
         rm -f "${COOKIE_FILE}"
         for i in $(seq 1 5); do
-            curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8001/session/login \
+            curl -s -o /dev/null -w '%{http_code}' -X POST ${_HIGRESS_CONSOLE_URL}/session/login \
                 -H 'Content-Type: application/json' \
                 -c "${COOKIE_FILE}" \
                 -d '{"username":"'"${HICLAW_ADMIN_USER}"'","password":"'"${HICLAW_ADMIN_PASSWORD}"'"}' 2>/dev/null
-            VERIFY2=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/v1/consumers -b "${COOKIE_FILE}" 2>/dev/null) || true
+            VERIFY2=$(curl -s -o /dev/null -w '%{http_code}' ${_HIGRESS_CONSOLE_URL}/v1/consumers -b "${COOKIE_FILE}" 2>/dev/null) || true
             if [ "${VERIFY2}" = "200" ]; then
                 log "Re-login successful, session verified"
                 break
@@ -687,14 +724,12 @@ source /opt/hiclaw/scripts/lib/container-api.sh
 if container_api_available; then
     log "Container runtime socket detected at ${CONTAINER_SOCKET} — direct Worker creation enabled"
     export HICLAW_CONTAINER_RUNTIME="socket"
+elif [ -n "${HICLAW_ORCHESTRATOR_URL:-}" ]; then
+    # K8s or cloud mode — Workers managed via Orchestrator
+    log "Workers managed via Orchestrator at ${HICLAW_ORCHESTRATOR_URL}"
+    export HICLAW_CONTAINER_RUNTIME="cloud"
 elif [ "${HICLAW_RUNTIME}" = "aliyun" ]; then
-    # No local Docker socket: worker lifecycle goes through HTTP (Orchestrator) or legacy SAE.
-    # Do not imply SAE when HICLAW_ORCHESTRATOR_URL is set (e.g. ACK/ACS + K8s workers).
-    if [ -n "${HICLAW_ORCHESTRATOR_URL:-}" ]; then
-        log "Cloud mode — Workers managed via Orchestrator (no local container socket)"
-    else
-        log "Cloud mode — Workers created via SAE API (set HICLAW_ORCHESTRATOR_URL to use Orchestrator)"
-    fi
+    log "Cloud mode — Workers created via SAE API (set HICLAW_ORCHESTRATOR_URL to use Orchestrator)"
     export HICLAW_CONTAINER_RUNTIME="cloud"
 else
     log "No container runtime found — Worker creation will output install commands"

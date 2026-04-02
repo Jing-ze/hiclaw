@@ -23,7 +23,11 @@ metadata:
   {{- end }}
 spec:
   accessModes:
+{{- if $isCloud }}
 {{- toYaml .Values.tuwunel.persistence.accessModes | nindent 4 }}
+{{- else }}
+    - ReadWriteOnce
+{{- end }}
   resources:
     requests:
       storage: {{ .Values.tuwunel.persistence.size | quote }}

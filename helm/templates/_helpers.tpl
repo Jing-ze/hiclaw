@@ -110,29 +110,47 @@ Inverse of isCloudPlatform.
 {{- end }}
 
 {{/*
+Image tag suffix: ACK/ACS 平台自动追加 _accelerated（ACR 镜像加速）。
+已包含 _accelerated 后缀的 tag 不会重复追加。
+*/}}
+{{- define "hiclaw.imageTagSuffix" -}}
+{{- $tag := . }}
+{{- if not (hasSuffix "_accelerated" $tag) }}
+{{- printf "%s_accelerated" $tag }}
+{{- else }}
+{{- $tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Manager image tag
 */}}
 {{- define "hiclaw.imageTag" -}}
-{{- default .Chart.AppVersion .Values.manager.image.tag }}
+{{- $tag := default .Chart.AppVersion .Values.manager.image.tag }}
+{{- if (include "hiclaw.isCloudPlatform" .) }}
+{{- include "hiclaw.imageTagSuffix" $tag }}
+{{- else }}
+{{- $tag }}
+{{- end }}
 {{- end }}
 
 {{/*
 Full manager image reference.
-Cloud platform (ack/acs) appends "-aliyun" suffix to repository when using default repository.
 */}}
 {{- define "hiclaw.image" -}}
-{{- $repo := .Values.manager.image.repository }}
-{{- if and (include "hiclaw.isCloudPlatform" .) (hasSuffix "hiclaw-manager" $repo) }}
-{{- $repo = printf "%s-aliyun" $repo }}
-{{- end }}
-{{- printf "%s:%s" $repo (include "hiclaw.imageTag" .) }}
+{{- printf "%s:%s" .Values.manager.image.repository (include "hiclaw.imageTag" .) }}
 {{- end }}
 
 {{/*
 Orchestrator image tag
 */}}
 {{- define "hiclaw.orchestrator.imageTag" -}}
-{{- default .Chart.AppVersion .Values.orchestrator.image.tag }}
+{{- $tag := default .Chart.AppVersion .Values.orchestrator.image.tag }}
+{{- if (include "hiclaw.isCloudPlatform" .) }}
+{{- include "hiclaw.imageTagSuffix" $tag }}
+{{- else }}
+{{- $tag }}
+{{- end }}
 {{- end }}
 
 {{/*
