@@ -86,14 +86,14 @@ Chart 会为 **Manager / Orchestrator** 分别创建 **Kubernetes ServiceAccount
 | `manager.rrsa.manual.roleArn` | Manager Pod **AssumeRoleWithOIDC** 使用的 **RAM 角色 ARN**（manual RRSA） |
 | `manager.resources.requests.cpu` | Manager Deployment **requests.cpu** |
 | `manager.resources.requests.memory` | Manager Deployment **requests.memory**（如 `2Gi`） |
-| `manager.secret.stringData.HICLAW_AI_GATEWAY_URL` | **LLM / AI 网关（APIG）** 出站地址；**同时作为 Element Web 的 `MATRIX_SERVER_URL` 默认值**（除非你另设 `elementWeb.env.MATRIX_SERVER_URL`） |
-| `manager.secret.stringData.HICLAW_OSS_BUCKET` | **OSS Bucket** 名称（与 RAM 策略前缀一致） |
-| `manager.secret.stringData.HICLAW_MANAGER_PASSWORD` | Manager 在 Matrix 上的账户密码 |
-| `manager.secret.stringData.HICLAW_MANAGER_GATEWAY_KEY` | Higress / APIG **Consumer** 密钥（与网关配置一致） |
-| `manager.secret.stringData.HICLAW_ORCHESTRATOR_API_KEY` | **强烈建议填写**：Manager 与 Orchestrator 共用的 Bearer Token；Orchestrator 凭此启用 API 鉴权并为每个 K8s Worker 下发 **`HICLAW_WORKER_API_KEY`** 以调用 **`/credentials/sts`**。为空则关闭鉴权且 Worker 无法获得 STS 子密钥（云上 Worker 会拉 OSS 失败） |
-| `manager.secret.stringData.HICLAW_REGISTRATION_TOKEN` | Matrix **开放注册** Token（与 Tuwunel **`CONDUWUIT_REGISTRATION_TOKEN`** 同源：同一 Secret 的 `HICLAW_REGISTRATION_TOKEN` 键） |
-| `manager.secret.stringData.HICLAW_ADMIN_USER` | 管理后台用户名 |
-| `manager.secret.stringData.HICLAW_ADMIN_PASSWORD` | 管理后台密码 |
+| `global.secret.stringData.HICLAW_AI_GATEWAY_URL` | **LLM / AI 网关（APIG）** 出站地址；**同时作为 Element Web 的 `MATRIX_SERVER_URL` 默认值**（除非你另设 `elementWeb.env.MATRIX_SERVER_URL`） |
+| `global.secret.stringData.HICLAW_OSS_BUCKET` | **OSS Bucket** 名称（与 RAM 策略前缀一致） |
+| `global.secret.stringData.HICLAW_MANAGER_PASSWORD` | Manager 在 Matrix 上的账户密码 |
+| `global.secret.stringData.HICLAW_MANAGER_GATEWAY_KEY` | Higress / APIG **Consumer** 密钥（与网关配置一致） |
+| `global.secret.stringData.HICLAW_ORCHESTRATOR_API_KEY` | **强烈建议填写**：Manager 与 Orchestrator 共用的 Bearer Token；Orchestrator 凭此启用 API 鉴权并为每个 K8s Worker 下发 **`HICLAW_WORKER_API_KEY`** 以调用 **`/credentials/sts`**。为空则关闭鉴权且 Worker 无法获得 STS 子密钥（云上 Worker 会拉 OSS 失败） |
+| `global.secret.stringData.HICLAW_REGISTRATION_TOKEN` | Matrix **开放注册** Token（与 Tuwunel **`CONDUWUIT_REGISTRATION_TOKEN`** 同源：同一 Secret 的 `HICLAW_REGISTRATION_TOKEN` 键） |
+| `global.secret.stringData.HICLAW_ADMIN_USER` | 管理后台用户名 |
+| `global.secret.stringData.HICLAW_ADMIN_PASSWORD` | 管理后台密码 |
 | `tuwunel.resources.requests.cpu` | Tuwunel Deployment **requests.cpu** |
 | `tuwunel.resources.requests.memory` | Tuwunel Deployment **requests.memory** |
 | `global.platform` | **`ack`** 或 **`acs`**：Tuwunel NAS 挂载形态（全局）；可被 **`tuwunel.persistence.platform`** 覆盖 |
@@ -116,39 +116,35 @@ helm upgrade --install hiclaw ./helm \
   --namespace hiclaw \
   --create-namespace \
   -f ./helm/values.yaml \
+  --set global.platform='ack 或 acs' \
+  --set-string global.rrsa.oidcProviderArn='集群 RRSA OIDC Provider ARN（Manager/Orchestrator 共用）' \
+  --set-string global.secret.stringData.HICLAW_AI_GATEWAY_URL='AI 网关 APIG 出站 URL' \
+  --set-string global.secret.stringData.HICLAW_OSS_BUCKET='OSS Bucket 名' \
+  --set-string global.secret.stringData.HICLAW_MANAGER_PASSWORD='Manager Matrix 账户密码' \
+  --set-string global.secret.stringData.HICLAW_MANAGER_GATEWAY_KEY='网关 Consumer 密钥' \
+  --set-string global.secret.stringData.HICLAW_ORCHESTRATOR_API_KEY='Manager 与 Orchestrator 之间的 API Token（K8s Worker 建议必填）' \
+  --set-string global.secret.stringData.HICLAW_REGISTRATION_TOKEN='Matrix 开放注册 Token' \
+  --set-string global.secret.stringData.HICLAW_ADMIN_USER='管理后台用户名' \
+  --set-string global.secret.stringData.HICLAW_ADMIN_PASSWORD='管理后台密码' \
   --set orchestrator.rrsa.roleName='Orchestrator RRSA 角色短名（webhook 用）' \
   --set orchestrator.rrsa.manual.roleArn='Orchestrator RAM OIDC 角色 ARN' \
   --set orchestrator.env.HICLAW_GW_GATEWAY_ID='AI 网关ID' \
-  --set-string global.rrsa.oidcProviderArn='集群 RRSA OIDC Provider ARN（Manager/Orchestrator 共用）' \
   --set manager.rrsa.roleName='Manager RRSA 角色短名（webhook 用）' \
   --set manager.rrsa.manual.roleArn='Manager RAM OIDC 角色 ARN' \
-  --set manager.resources.requests.cpu='Manager requests.cpu，如 2' \
-  --set-string manager.resources.requests.memory='Manager requests.memory，如 2Gi' \
-  --set-string manager.secret.stringData.HICLAW_AI_GATEWAY_URL='AI 网关 APIG 出站 URL' \
-  --set-string manager.secret.stringData.HICLAW_OSS_BUCKET='OSS Bucket 名' \
-  --set-string manager.secret.stringData.HICLAW_MANAGER_PASSWORD='Manager Matrix 账户密码' \
-  --set-string manager.secret.stringData.HICLAW_MANAGER_GATEWAY_KEY='网关 Consumer 密钥' \
-  --set-string manager.secret.stringData.HICLAW_ORCHESTRATOR_API_KEY='Manager 与 Orchestrator 之间的 API Token（K8s Worker 建议必填）' \
-  --set-string manager.secret.stringData.HICLAW_REGISTRATION_TOKEN='Matrix 开放注册 Token' \
-  --set-string manager.secret.stringData.HICLAW_ADMIN_USER='管理后台用户名' \
-  --set-string manager.secret.stringData.HICLAW_ADMIN_PASSWORD='管理后台密码' \
-  --set tuwunel.resources.requests.cpu='Tuwunel requests.cpu，如 500m' \
-  --set-string tuwunel.resources.requests.memory='Tuwunel requests.memory，如 1Gi' \
-  --set global.platform='ack 或 acs' \
   --set-string tuwunel.persistence.nas.server='NAS 挂载点（ACK 静态 PV 与 ACS mountpoint 共用）'
 ```
 
 说明：
 
 - **`HICLAW_AI_GATEWAY_URL`** 已同时作为 **Element Web `MATRIX_SERVER_URL`**（除非另设 **`elementWeb.env.MATRIX_SERVER_URL`**）。
-- **`HICLAW_REGISTRATION_TOKEN`**：Manager 与 Tuwunel **共用**——Tuwunel 通过 **`valueFrom.secretKeyRef`** 读取与 Manager 相同的 Secret 键；无 `envFrom` Secret 时回退为 `manager.secret.stringData` 或 **`manager.env.HICLAW_REGISTRATION_TOKEN`**。
+- **`HICLAW_REGISTRATION_TOKEN`**：Manager 与 Tuwunel **共用**——Tuwunel 通过 **`valueFrom.secretKeyRef`** 读取与 Manager 相同的 Secret 键；无 `envFrom` Secret 时回退为 `global.secret.stringData` 或 **`manager.env.HICLAW_REGISTRATION_TOKEN`**。
 - **`tuwunel.persistence.nas.server`** 同时用于 **ACK**（PV `server`）与 **ACS**（`csi.alibabacloud.com/mountpoint`），**一条即可**。
 - **`platform=acs`** 时：配置 **`tuwunel.persistence.acs.storageClassName`** 等（见 `values.yaml`），并设 **`tuwunel.persistence.pv.enabled=false`**（勿再下发 ACK 静态 PV）。
 - 镜像、**`manager.env.HICLAW_RUNTIME`**、**`orchestrator.env`** 等仍可由 **`values.yaml`** 提供；Orchestrator 默认会继承 `manager.env` 中的云端相关环境变量（如 **`HICLAW_GW_*`**）；**`workerImage`** / **`copawWorkerImage`** / **`workerRuntime`**（`openclaw` \| `copaw`）决定 Orchestrator 创建的 Worker 镜像与运行时。
 
 ### K8s Worker、OSS 与 Orchestrator STS
 
-- **同一 Secret**：Manager 与 Orchestrator 均通过 **`envFrom`** 挂载 chart 管理的 **`manager.secret`**（或 `manager.envFromSecret`），因此 **`HICLAW_OSS_BUCKET`**、**`HICLAW_ORCHESTRATOR_API_KEY`** 等在两者进程中一致；无需在 Orchestrator Deployment 上重复手写（除非使用外部 Secret 且键名一致）。
+- **同一 Secret**：Manager 与 Orchestrator 均通过 **`envFrom`** 挂载 chart 管理的 **`global.secret`**（或 `manager.envFromSecret`），因此 **`HICLAW_OSS_BUCKET`**、**`HICLAW_ORCHESTRATOR_API_KEY`** 等在两者进程中一致；无需在 Orchestrator Deployment 上重复手写（除非使用外部 Secret 且键名一致）。
 - **创建 Worker 时的环境变量**：Kubernetes 后端在创建 Worker Pod 时，若请求体未带 **`HICLAW_OSS_BUCKET`** / **`HICLAW_REGION`**，会从 **Orchestrator 进程环境**补全，避免 `mc` 使用错误的存储前缀。
 - **STS 返回的 OSS 域名**：Orchestrator 向 Worker 下发的 **`oss_endpoint` 默认为公网** `oss-<region>.aliyuncs.com`（便于 **Serverless / 非 VPC 内网** 的 Worker 拉取）。若 Worker 与 OSS **同 VPC** 且需走内网，请在 **Orchestrator** 容器环境设置 **`HICLAW_OSS_USE_INTERNAL_ENDPOINT=true`**。
 - **镜像仓库**：**`workerImage`** 与 **`copawWorkerImage`** 可指向不同仓库；若节点拉取某一仓库出现 TLS/鉴权超时，建议将两者推送到**同一可达的 ACR 实例**并在 `values.yaml` 中统一 `repository` 前缀。
@@ -172,19 +168,61 @@ kubectl -n hiclaw logs deployment/<同上> -f --tail=100
 | Key | Purpose |
 |-----|---------|
 | `global.namespace` | Target namespace (metadata on resources) |
-| `global.platform` | **`ack`** \| **`acs`** — Tuwunel NAS mode |
-| `manager.rrsa.mode` (`manual` / `webhook`) | **manual**：projected OIDC token + `ALIBABA_CLOUD_*`（与 ACK 文档「手动 RRSA」一致）；**webhook**：SA `pod-identity` 注解 + 可选 `global.podIdentity.namespaceInjection` |
-| `image.*` | Manager 镜像 |
-| `workerImage.*` | OpenClaw Worker 镜像（`HICLAW_WORKER_IMAGE` → Orchestrator） |
-| `copawWorkerImage.*` | CoPaw Worker 镜像（`runtime: copaw` 时使用；可与 `workerImage` 使用同一 ACR 以降低拉取失败概率） |
-| `workerRuntime` | 默认 **`openclaw`** \| **`copaw`**，写入 Manager 的 **`HICLAW_DEFAULT_WORKER_RUNTIME`** |
-| `manager.env` / `manager.secret.stringData` / `manager.envFromSecret` | Runtime configuration (chart Secret vs external Secret) |
-| `manager.rrsa.*` | ACK pod identity role name |
-| `orchestrator.*` | Orchestrator image, Service, RRSA, env and Pod scheduling |
-| `rbac.create` | In-cluster RBAC for the Orchestrator ServiceAccount (Pod exec, logs, create/delete) |
-| `tuwunel.persistence.pv` | **ACK**：可选 Chart 管理 **PersistentVolume**（`pv.enabled` + `server` / `path`） |
-| `tuwunel.persistence.nas.server` | **ACK** PV `server` and **ACS** `mountpoint` (one value) |
-| `tuwunel.*` | Homeserver image, NAS persistence |
-| `elementWeb.*` | Element Web image; optional **`env.MATRIX_SERVER_URL`** (defaults to **`HICLAW_AI_GATEWAY_URL`**, then in-cluster Tuwunel) |
+| `global.platform` | 空 / 未设置 = 通用 k8s 模式；**`ack`** \| **`acs`** = 阿里云模式 |
+| `global.secret.stringData.*` | Manager 与 Orchestrator 共享的 Secret 环境变量 |
+| `manager.image.*` | Manager 镜像 |
+| `manager.rrsa.mode` (`manual` / `webhook`) | 阿里云模式：RRSA Pod 身份认证 |
+| `workerImage.*` | OpenClaw Worker 镜像 |
+| `copawWorkerImage.*` | CoPaw Worker 镜像 |
+| `workerRuntime` | 默认 **`openclaw`** \| **`copaw`** |
+| `manager.env` / `manager.envFromSecret` | Manager 额外环境变量 |
+| `orchestrator.*` | Orchestrator image, Service, RRSA, env |
+| `minio.*` | 通用 k8s 模式下的 MinIO 配置（镜像、存储、凭据） |
+| `higress.enabled` | 通用 k8s 模式下启用 Higress AI 网关子 Chart |
+| `tuwunel.*` | Homeserver image, persistence |
+| `elementWeb.*` | Element Web image |
 
 详见 `values.yaml` 默认值。
+
+---
+
+## 通用 Kubernetes 部署（kind / minikube / 标准 k8s）
+
+当 `global.platform` 为空或未设置时，Chart 以通用 k8s 模式部署：
+- **MinIO** 替代阿里云 OSS，由 Chart 自动部署
+- **Higress** 替代外部 APIG，通过子 Chart 依赖部署（需设置 `higress.enabled: true`）
+- **RRSA** 相关配置自动跳过
+- **Tuwunel** 使用默认 StorageClass 的 PVC（而非 NAS）
+
+### 通用 k8s 安装命令示例
+
+```bash
+# 1. 添加 Higress Helm 仓库并更新依赖
+helm repo add higress.io https://higress.io/helm-charts
+helm dependency update ./helm
+
+# 2. 安装（通用 k8s 模式，platform 默认为空）
+helm upgrade --install hiclaw ./helm \
+  --namespace hiclaw \
+  --create-namespace \
+  -f ./helm/values.yaml \
+  --set higress.enabled=true \
+  --set-string global.secret.stringData.HICLAW_MANAGER_PASSWORD='Manager Matrix 密码' \
+  --set-string global.secret.stringData.HICLAW_REGISTRATION_TOKEN='Matrix 注册 Token' \
+  --set-string global.secret.stringData.HICLAW_ADMIN_USER='管理后台用户名' \
+  --set-string global.secret.stringData.HICLAW_ADMIN_PASSWORD='管理后台密码'
+```
+
+### 通用 k8s 模式 Values 参数
+
+| Key | 说明 | 默认值 |
+|-----|------|--------|
+| `minio.image.repository` | MinIO 镜像 | `minio/minio` |
+| `minio.image.tag` | MinIO 镜像 tag | `latest` |
+| `minio.persistence.enabled` | 启用 MinIO 数据持久化 | `true` |
+| `minio.persistence.size` | MinIO PVC 大小 | `10Gi` |
+| `minio.auth.rootUser` | MinIO root 用户名 | `minioadmin` |
+| `minio.auth.rootPassword` | MinIO root 密码 | `minioadmin` |
+| `minio.bucketName` | MinIO bucket 名称 | `hiclaw` |
+| `higress.enabled` | 启用 Higress AI 网关子 Chart | `false` |
+| `higress.global.local` | Higress 本地集群模式 | `true` |

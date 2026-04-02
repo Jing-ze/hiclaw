@@ -4,8 +4,10 @@
 {{- $envSecret := include "hiclaw.orchestrator.envFromSecretName" . | trim }}
 {{- $mgrEnv := .Values.manager.env | default dict }}
 {{- $orchEnv := .Values.orchestrator.env | default dict }}
-{{- $runtime := coalesce (index $orchEnv "HICLAW_RUNTIME") (index $mgrEnv "HICLAW_RUNTIME") "aliyun" }}
-{{- $region := coalesce (index $orchEnv "HICLAW_REGION") (index $mgrEnv "HICLAW_REGION") "cn-hangzhou" }}
+{{- $runtimeDefault := ternary "aliyun" "" (eq (include "hiclaw.isCloudPlatform" .) "true") }}
+{{- $runtime := coalesce (index $orchEnv "HICLAW_RUNTIME") (index $mgrEnv "HICLAW_RUNTIME") $runtimeDefault }}
+{{- $regionDefault := ternary "cn-hangzhou" "" (eq (include "hiclaw.isCloudPlatform" .) "true") }}
+{{- $region := coalesce (index $orchEnv "HICLAW_REGION") (index $mgrEnv "HICLAW_REGION") $regionDefault }}
 {{- $gwGatewayID := coalesce (index $orchEnv "HICLAW_GW_GATEWAY_ID") (index $mgrEnv "HICLAW_GW_GATEWAY_ID") "" }}
 {{- if .Values.orchestrator.serviceAccount.create }}
 apiVersion: v1
@@ -112,7 +114,7 @@ spec:
             - name: HICLAW_COPAW_WORKER_IMAGE
               value: {{ printf "%s:%s" .Values.copawWorkerImage.repository (.Values.copawWorkerImage.tag | default "latest") | quote }}
             - name: HICLAW_PROXY_CONTAINER_PREFIX
-              value: {{ .Values.orchestrator.containerPrefix | default "hiclaw-worker-" | quote }}
+              value: {{ index (.Values.orchestrator.env | default dict) "HICLAW_PROXY_CONTAINER_PREFIX" | default .Values.orchestrator.containerPrefix | default "hiclaw-worker-" | quote }}
             - name: TZ
               value: {{ .Values.orchestrator.timezone | default "Asia/Shanghai" | quote }}
             {{- if $gwGatewayID }}
@@ -125,11 +127,28 @@ spec:
             {{- end }}
             {{- range $k, $v := $orchEnv }}
             {{- if $v }}
-            {{- if not (has $k (list "HICLAW_RUNTIME" "HICLAW_REGION" "HICLAW_GW_GATEWAY_ID")) }}
+            {{- if not (has $k (list "HICLAW_RUNTIME" "HICLAW_REGION" "HICLAW_GW_GATEWAY_ID" "HICLAW_PROXY_CONTAINER_PREFIX")) }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
             {{- end }}
+            {{- end }}
+            {{- /* 通用 k8s 模式：注入 MinIO 环境变量，Orchestrator 创建 Worker 时会传递 */ -}}
+            {{- if (include "hiclaw.isGenericK8s" .) }}
+            - name: HICLAW_MINIO_ENDPOINT
+              value: {{ include "hiclaw.minio.internalURL" . | quote }}
+            - name: HICLAW_MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hiclaw.minio.fullname" . }}
+                  key: MINIO_ROOT_USER
+            - name: HICLAW_MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hiclaw.minio.fullname" . }}
+                  key: MINIO_ROOT_PASSWORD
+            - name: HICLAW_MINIO_BUCKET
+              value: {{ .Values.minio.bucketName | quote }}
             {{- end }}
             {{- if $rrsaManual }}
             - name: ALIBABA_CLOUD_ROLE_ARN

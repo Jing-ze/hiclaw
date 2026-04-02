@@ -1,8 +1,6 @@
 {{- if and .Values.tuwunel.persistence.enabled (not .Values.tuwunel.persistence.existingClaim) }}
-{{- $p := required "global.platform (or tuwunel.persistence.platform) must be ack or acs" (include "hiclaw.persistence.platform" . | trim) }}
-{{- if and (ne $p "ack") (ne $p "acs") }}
-{{- fail "global.platform must be ack or acs" }}
-{{- end }}
+{{- $p := include "hiclaw.persistence.platform" . | trim }}
+{{- $isCloud := include "hiclaw.isCloudPlatform" . }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -47,6 +45,11 @@ spec:
   {{- else }}
   {{- fail "tuwunel.persistence (ack): set pv.enabled=true for chart PV, or persistence.selector, or persistence.volumeName" }}
   {{- end }}
+  {{- end }}
+  {{- else }}
+  {{- /* 通用 k8s 模式：使用默认或用户指定的 StorageClass */ -}}
+  {{- with .Values.tuwunel.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
   {{- end }}
   {{- end }}
   {{- if .Values.tuwunel.persistence.volumeMode }}

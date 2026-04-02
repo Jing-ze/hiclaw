@@ -1,24 +1,31 @@
 ========================================================================
-HiClaw (cloud) — {{ .Chart.Name }} / {{ .Release.Name }}
+{{- if (include "hiclaw.isCloudPlatform" .) }}
+HiClaw (cloud / {{ .Values.global.platform }}) — {{ .Chart.Name }} / {{ .Release.Name }}
+{{- else }}
+HiClaw (generic k8s) — {{ .Chart.Name }} / {{ .Release.Name }}
+{{- end }}
 ========================================================================
 
 Namespace: {{ include "hiclaw.namespace" . }}
+Platform:  {{ .Values.global.platform | default "generic" }}
 
 1. Wait for Manager and Orchestrator:
-   kubectl wait --for=condition=available deployment/{{ include "hiclaw.fullname" . }} \
+   kubectl wait --for=condition=available deployment/{{ include "hiclaw.manager.fullname" . }} \
      -n {{ include "hiclaw.namespace" . }} --timeout=300s
    kubectl wait --for=condition=available deployment/{{ include "hiclaw.orchestrator.fullname" . }} \
      -n {{ include "hiclaw.namespace" . }} --timeout=300s
 
 2. Coordinator Pod (outbound-only): OpenClaw gateway :{{ .Values.manager.service.targetPort }} for health checks.
-   Service: {{ include "hiclaw.fullname" . }}:{{ .Values.manager.service.port }}
+   Service: {{ include "hiclaw.manager.fullname" . }}:{{ .Values.manager.service.port }}
 
-3. Orchestrator (worker lifecycle + cloud gateway backend):
+3. Orchestrator (worker lifecycle):
    Service: {{ include "hiclaw.orchestrator.fullname" . }}:{{ .Values.orchestrator.service.port }}
    In-cluster URL: {{ include "hiclaw.orchestrator.serviceURL" . }}
 
    Optional port-forward:
-   kubectl port-forward svc/{{ include "hiclaw.fullname" . }} {{ .Values.manager.service.port }}:{{ .Values.manager.service.targetPort }} -n {{ include "hiclaw.namespace" . }}
+   kubectl port-forward svc/{{ include "hiclaw.manager.fullname" . }} {{ .Values.manager.service.port }}:{{ .Values.manager.service.targetPort }} -n {{ include "hiclaw.namespace" . }}
+
+{{- if (include "hiclaw.isCloudPlatform" .) }}
 
 4. ACK RRSA — Default: manual injection (projected token + ALIBABA_CLOUD_*).
    - Manager: values manager.rrsa.manual.*
@@ -26,18 +33,31 @@ Namespace: {{ include "hiclaw.namespace" . }}
 {{- if eq (.Values.manager.rrsa.mode | default "manual") "webhook" }}
    Webhook mode: install ack-pod-identity-webhook; SA role-name Manager={{ .Values.manager.rrsa.roleName }}, Orchestrator={{ .Values.orchestrator.rrsa.roleName }}; enable global.podIdentity.namespaceInjection if needed.
 {{- end }}
+{{- else }}
 
-5. Secrets: set manager.secret.stringData (chart Secret) or manager.envFromSecret (external Secret). The same secret is reused by the Orchestrator unless orchestrator.envFromSecret is set explicitly. Without envFromSecret, HICLAW_MATRIX_URL / HICLAW_MATRIX_DOMAIN are injected on the Manager Deployment (manager.env can override).
+4. MinIO (object storage):
+   Service: {{ include "hiclaw.minio.fullname" . }}:{{ .Values.minio.service.apiPort }} (API) / {{ .Values.minio.service.consolePort }} (Console)
+   In-cluster URL: {{ include "hiclaw.minio.internalURL" . }}
+   Bucket: {{ .Values.minio.bucketName }}
 
-6. Tuwunel + Element Web (always deployed with this chart):
+   Optional port-forward (Console):
+   kubectl port-forward svc/{{ include "hiclaw.minio.fullname" . }} {{ .Values.minio.service.consolePort }}:{{ .Values.minio.service.consolePort }} -n {{ include "hiclaw.namespace" . }}
+{{- if .Values.higress.enabled }}
+
+5. Higress AI Gateway (sub-chart):
+   Gateway URL: {{ include "hiclaw.higress.gatewayURL" . }}
+{{- end }}
+{{- end }}
+
+6. Secrets: set global.secret.stringData (chart Secret) or manager.envFromSecret (external Secret). The same secret is reused by the Orchestrator unless orchestrator.envFromSecret is set explicitly.
+
+7. Tuwunel + Element Web (always deployed with this chart):
    - Tuwunel: svc/{{ include "hiclaw.tuwunel.fullname" . }}:{{ .Values.tuwunel.service.port }}
-     In-cluster Matrix base URL (Manager / scripts): {{ include "hiclaw.tuwunel.internalMatrixURL" . }}
-     Suggested CONDUWUIT_SERVER_NAME & HICLAW_MATRIX_DOMAIN (pod MXID server part): {{ include "hiclaw.tuwunel.clusterFQDN" . }}:{{ .Values.tuwunel.service.port }}
+     In-cluster Matrix base URL: {{ include "hiclaw.tuwunel.internalMatrixURL" . }}
    - Element Web: svc/{{ include "hiclaw.elementWeb.fullname" . }}:{{ .Values.elementWeb.service.port }}
-     MATRIX_SERVER_URL defaults to HICLAW_AI_GATEWAY_URL (then in-cluster Tuwunel if unset); override with elementWeb.env.MATRIX_SERVER_URL if needed.
 
 # Logs
-kubectl logs -f deployment/{{ include "hiclaw.fullname" . }} -n {{ include "hiclaw.namespace" . }}
+kubectl logs -f deployment/{{ include "hiclaw.manager.fullname" . }} -n {{ include "hiclaw.namespace" . }}
 kubectl logs -f deployment/{{ include "hiclaw.orchestrator.fullname" . }} -n {{ include "hiclaw.namespace" . }}
 
 ========================================================================

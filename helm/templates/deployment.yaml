@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "hiclaw.fullname" . }}
+  name: {{ include "hiclaw.manager.fullname" . }}
   namespace: {{ include "hiclaw.namespace" . }}
   labels:
     {{- include "hiclaw.labels" . | nindent 4 }}
@@ -37,7 +37,7 @@ spec:
       containers:
         - name: manager
           image: {{ include "hiclaw.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.manager.image.pullPolicy }}
           ports:
             - name: openclaw
               containerPort: {{ .Values.manager.service.targetPort }}
@@ -53,6 +53,10 @@ spec:
               value: {{ include "hiclaw.orchestrator.serviceURL" . | quote }}
             - name: HICLAW_DEFAULT_WORKER_RUNTIME
               value: {{ .Values.workerRuntime | default "openclaw" | quote }}
+            {{- if and (include "hiclaw.isCloudPlatform" .) (not (index (.Values.manager.env | default dict) "HICLAW_RUNTIME")) }}
+            - name: HICLAW_RUNTIME
+              value: "aliyun"
+            {{- end }}
             {{- if not .Values.manager.envFromSecret }}
             - name: HICLAW_MATRIX_URL
               value: {{ include "hiclaw.tuwunel.internalMatrixURL" . | quote }}
@@ -63,6 +67,27 @@ spec:
             {{- if $v }}
             - name: {{ $k }}
               value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            {{- /* 通用 k8s 模式：注入 MinIO 和 Higress 环境变量 */ -}}
+            {{- if (include "hiclaw.isGenericK8s" .) }}
+            - name: HICLAW_MINIO_ENDPOINT
+              value: {{ include "hiclaw.minio.internalURL" . | quote }}
+            - name: HICLAW_MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hiclaw.minio.fullname" . }}
+                  key: MINIO_ROOT_USER
+            - name: HICLAW_MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hiclaw.minio.fullname" . }}
+                  key: MINIO_ROOT_PASSWORD
+            - name: HICLAW_MINIO_BUCKET
+              value: {{ .Values.minio.bucketName | quote }}
+            {{- if .Values.higress.enabled }}
+            - name: HICLAW_AI_GATEWAY_URL
+              value: {{ include "hiclaw.higress.gatewayURL" . | quote }}
             {{- end }}
             {{- end }}
             {{- if $rrsaManual }}

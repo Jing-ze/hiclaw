@@ -22,6 +22,17 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
+Manager fully qualified name (Deployment / Service).
+*/}}
+{{- define "hiclaw.manager.fullname" -}}
+{{- if .Values.manager.deploymentName }}
+{{- .Values.manager.deploymentName | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- include "hiclaw.fullname" . }}
+{{- end }}
+{{- end }}
+
+{{/*
 Create chart name and version as used by the chart label.
 */}}
 {{- define "hiclaw.chart" -}}
@@ -67,14 +78,30 @@ Namespace for all namespaced resources
 {{- default .Release.Namespace .Values.global.namespace }}
 {{- end }}
 
+{{/*
+Platform detection: returns "true" when running on Alibaba Cloud (ACK / ACS).
+*/}}
+{{- define "hiclaw.isCloudPlatform" -}}
+{{- $p := .Values.global.platform | default "" | trim -}}
+{{- if or (eq $p "ack") (eq $p "acs") -}}true{{- end -}}
+{{- end }}
+
+{{/*
+Platform detection: returns "true" when running on generic Kubernetes (kind, minikube, etc.).
+Inverse of isCloudPlatform.
+*/}}
+{{- define "hiclaw.isGenericK8s" -}}
+{{- if not (include "hiclaw.isCloudPlatform" .) -}}true{{- end -}}
+{{- end }}
+
 {{/* NAS 形态：默认 global.platform；可被 tuwunel.persistence.platform 覆盖 */}}
 {{- define "hiclaw.persistence.platform" -}}
 {{- coalesce .Values.tuwunel.persistence.platform .Values.global.platform }}
 {{- end }}
 
-{{/* manager.secret.stringData — HICLAW_REGISTRATION_TOKEN（字面量，无 envFrom Secret 时用） */}}
+{{/* global.secret.stringData — HICLAW_REGISTRATION_TOKEN（字面量，无 envFrom Secret 时用） */}}
 {{- define "hiclaw.registrationToken.literal" -}}
-{{- $s := .Values.manager.secret.stringData | default dict }}
+{{- $s := .Values.global.secret.stringData | default dict }}
 {{- index $s "HICLAW_REGISTRATION_TOKEN" | default "" | toString | trim }}
 {{- end }}
 
@@ -86,14 +113,19 @@ Namespace for all namespaced resources
 Manager image tag
 */}}
 {{- define "hiclaw.imageTag" -}}
-{{- default .Chart.AppVersion .Values.image.tag }}
+{{- default .Chart.AppVersion .Values.manager.image.tag }}
 {{- end }}
 
 {{/*
-Full manager image reference
+Full manager image reference.
+Cloud platform (ack/acs) appends "-aliyun" suffix to repository when using default repository.
 */}}
 {{- define "hiclaw.image" -}}
-{{- printf "%s:%s" .Values.image.repository (include "hiclaw.imageTag" .) }}
+{{- $repo := .Values.manager.image.repository }}
+{{- if and (include "hiclaw.isCloudPlatform" .) (hasSuffix "hiclaw-manager" $repo) }}
+{{- $repo = printf "%s-aliyun" $repo }}
+{{- end }}
+{{- printf "%s:%s" $repo (include "hiclaw.imageTag" .) }}
 {{- end }}
 
 {{/*
@@ -111,13 +143,13 @@ Full orchestrator image reference
 {{- end }}
 
 {{/*
-Shared runtime env Secret name: chart-managed (manager.secret) or external (manager.envFromSecret).
+Shared runtime env Secret name: chart-managed (global.secret) or external (manager.envFromSecret).
 This Secret is reused by Manager, Orchestrator, and Tuwunel registration token wiring.
 Empty string means no envFrom block.
 */}}
 {{- define "hiclaw.shared.envFromSecretName" -}}
-{{- if and .Values.manager.secret.enabled (gt (len .Values.manager.secret.stringData) 0) }}
-{{- default (printf "%s-runtime-env" (include "hiclaw.fullname" .)) .Values.manager.secret.name }}
+{{- if and .Values.global.secret.enabled (gt (len .Values.global.secret.stringData) 0) }}
+{{- default (printf "%s-runtime-env" (include "hiclaw.fullname" .)) .Values.global.secret.name }}
 {{- else if .Values.manager.envFromSecret }}
 {{- .Values.manager.envFromSecret }}
 {{- end }}
@@ -145,7 +177,11 @@ Orchestrator envFrom Secret name: explicit override or reuse shared secret.
 Orchestrator naming helpers
 */}}
 {{- define "hiclaw.orchestrator.fullname" -}}
+{{- if .Values.orchestrator.deploymentName }}
+{{- .Values.orchestrator.deploymentName | trunc 63 | trimSuffix "-" }}
+{{- else }}
 {{- printf "%s-orchestrator" (include "hiclaw.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
 {{- end }}
 
 {{- define "hiclaw.orchestrator.selectorLabels" -}}
@@ -177,7 +213,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{/* Tuwunel (homeserver) — always deployed */}}
 {{- define "hiclaw.tuwunel.fullname" -}}
+{{- if .Values.tuwunel.deploymentName }}
+{{- .Values.tuwunel.deploymentName | trunc 63 | trimSuffix "-" }}
+{{- else }}
 {{- printf "%s-tuwunel" (include "hiclaw.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
 {{- end }}
 
 {{/* In-cluster DNS: Tuwunel Service (same namespace). No NLB/API gateway required for Pod↔Pod Matrix traffic. */}}
@@ -231,12 +271,16 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/* Element Web：浏览器 Matrix URL；未单独设置时与 HICLAW_AI_GATEWAY_URL 一致 */}}
 {{- define "hiclaw.elementWeb.matrixServerURL" -}}
 {{- $explicit := index (.Values.elementWeb.env | default dict) "MATRIX_SERVER_URL" | default "" | toString | trim }}
-{{- if $explicit }}{{ $explicit }}{{ else }}{{ index (.Values.manager.secret.stringData | default dict) "HICLAW_AI_GATEWAY_URL" | default "" | toString | trim }}{{ end }}
+{{- if $explicit }}{{ $explicit }}{{ else }}{{ index (.Values.global.secret.stringData | default dict) "HICLAW_AI_GATEWAY_URL" | default "" | toString | trim }}{{ end }}
 {{- end }}
 
 {{/* Element Web — always deployed */}}
 {{- define "hiclaw.elementWeb.fullname" -}}
+{{- if .Values.elementWeb.deploymentName }}
+{{- .Values.elementWeb.deploymentName | trunc 63 | trimSuffix "-" }}
+{{- else }}
 {{- printf "%s-element-web" (include "hiclaw.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
 {{- end }}
 
 {{- define "hiclaw.elementWeb.selectorLabels" -}}
@@ -263,6 +307,50 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if and .Values.global .Values.global.rrsa -}}
 {{- default "" .Values.global.rrsa.oidcProviderArn -}}
 {{- end -}}
+{{- end }}
+
+{{/* ── MinIO（通用 k8s 模式）──────────────────────────────────────────────── */}}
+
+{{- define "hiclaw.minio.fullname" -}}
+{{- printf "%s-minio" (include "hiclaw.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "hiclaw.minio.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "hiclaw.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: minio
+{{- end }}
+
+{{- define "hiclaw.minio.labels" -}}
+helm.sh/chart: {{ include "hiclaw.chart" . }}
+{{ include "hiclaw.minio.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{- define "hiclaw.minio.internalURL" -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "hiclaw.minio.fullname" .) (include "hiclaw.namespace" .) (.Values.minio.service.apiPort | int) }}
+{{- end }}
+
+{{- define "hiclaw.minio.image" -}}
+{{- printf "%s:%s" .Values.minio.image.repository .Values.minio.image.tag }}
+{{- end }}
+
+{{/* ── Higress（通用 k8s 模式，子 Chart）──────────────────────────────────── */}}
+
+{{/*
+Higress Gateway 集群内部 URL。
+子 Chart 的 gateway service 名称默认为 higress-gateway（在子 Chart 的命名空间内）。
+*/}}
+{{- define "hiclaw.higress.gatewayURL" -}}
+{{- $port := 80 }}
+{{- if and .Values.higress (index .Values.higress "higress-core") }}
+{{- $gw := index (index .Values.higress "higress-core") "gateway" | default dict }}
+{{- $port = $gw.httpPort | default 80 }}
+{{- end }}
+{{- printf "http://higress-gateway.%s.svc.cluster.local:%d" (include "hiclaw.namespace" .) ($port | int) }}
 {{- end }}
 
 {{/* RRSA: ack-pod-identity-webhook (SA annotation + optional namespace injection) */}}

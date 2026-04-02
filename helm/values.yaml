@@ -1,7 +1,7 @@
 # =============================================================================
 # HiClaw — ACK / cloud (Coordinator Manager + Tuwunel + Element Web, same namespace)
 # =============================================================================
-# Configure manager.env and/or manager.secret.stringData (chart Secret) or manager.envFromSecret (external Secret):
+# Configure manager.env and/or global.secret.stringData (chart Secret) or manager.envFromSecret (external Secret):
 #   HICLAW_MATRIX_URL, HICLAW_MATRIX_DOMAIN, HICLAW_AI_GATEWAY_URL, HICLAW_OSS_BUCKET, ...
 # Same-namespace K8s: Manager <-> Tuwunel use Cluster DNS (e.g. http://<tuwunel-svc>.<ns>.svc.cluster.local:6167).
 # HICLAW_AI_GATEWAY_URL：LLM/APIG 出站；未单独设置 elementWeb.env.MATRIX_SERVER_URL 时，Element Web 的 MATRIX_SERVER_URL 与之相同（浏览器访问）。
@@ -12,28 +12,47 @@
 
 global:
   namespace: hiclaw
-  platform: ack
+  platform: ""
   rrsa:
     oidcProviderArn: ""
-
-image:
-  repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-manager
-  pullPolicy: IfNotPresent
-  tag: latest_accelerated
+  secret:
+    enabled: true
+    stringData:
+      HICLAW_AI_GATEWAY_URL: ""
+      HICLAW_OSS_BUCKET: ""
+      HICLAW_MANAGER_PASSWORD: ""
+      HICLAW_MANAGER_GATEWAY_KEY: ""
+      HICLAW_REGISTRATION_TOKEN: ""
+      HICLAW_ADMIN_USER: ""
+      HICLAW_ADMIN_PASSWORD: ""
+      HICLAW_ORCHESTRATOR_API_KEY: ""
+      HICLAW_GW_MODEL_API_ID: ""
+      HICLAW_GW_ENV_ID: ""
+      HICLAW_CMS_TRACES_ENABLED: "true"
+      HICLAW_CMS_ENDPOINT: ""
+      HICLAW_CMS_LICENSE_KEY: ""
+      HICLAW_CMS_PROJECT: ""
+      HICLAW_CMS_WORKSPACE: ""
+      HICLAW_CMS_SERVICE_NAME: ""
 
 imagePullSecrets: []
 
 workerImage:
   repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-worker
-  tag: latest_accelerated
+  tag: v1.0.9-rc-k8s_accelerated
 
 copawWorkerImage:
   repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-copaw-worker
-  tag: latest_accelerated
+  tag: v1.0.9-rc-k8s_accelerated
 
 workerRuntime: "openclaw"
 
 manager:
+  deploymentName: ""
+  image:
+    repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-manager
+    pullPolicy: IfNotPresent
+    tag: v1.0.9-rc-k8s_accelerated
   healthCheck:
     enabled: true
     type: "tcp"                 # "tcp" or "http"
@@ -61,31 +80,19 @@ manager:
     port: 18799
     targetPort: 18799
   env:
-    HICLAW_RUNTIME: "aliyun"
-    HICLAW_REGION: "cn-hangzhou"
+    HICLAW_RUNTIME: ""
+    HICLAW_REGION: ""
     HICLAW_DEFAULT_MODEL: "qwen3.5-plus"
-  secret:
-    enabled: true
-    stringData:
-      HICLAW_AI_GATEWAY_URL: ""
-      HICLAW_OSS_BUCKET: ""
-      HICLAW_MANAGER_PASSWORD: ""
-      HICLAW_MANAGER_GATEWAY_KEY: ""
-      HICLAW_REGISTRATION_TOKEN: ""
-      HICLAW_ADMIN_USER: ""
-      HICLAW_ADMIN_PASSWORD: ""
-      HICLAW_ORCHESTRATOR_API_KEY: ""
-      HICLAW_GW_MODEL_API_ID: ""
-      HICLAW_GW_ENV_ID: ""
   envFromSecret: ""
   podSecurityContext: {}
   securityContext: {}
 
 orchestrator:
+  deploymentName: ""
   image:
     repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/hiclaw-orchestrator
     pullPolicy: IfNotPresent
-    tag: latest_accelerated
+    tag: v1.0.0-rc-k8s_accelerated
   service:
     type: ClusterIP
     port: 2375
@@ -114,6 +121,7 @@ orchestrator:
   timezone: "Asia/Shanghai"
   env:
     HICLAW_GW_GATEWAY_ID: ""
+    HICLAW_PROXY_CONTAINER_PREFIX: "hiclaw-worker-"
     HICLAW_WORKER_BACKEND: "k8s"
   envFromSecret: ""
   podAnnotations: {}
@@ -143,6 +151,7 @@ rbac:
   additionalRules: []
 
 tuwunel:
+  deploymentName: ""
   image:
     registry: registry.cn-hangzhou.aliyuncs.com
     repository: hiclaw-cloud/tuwunel
@@ -170,6 +179,7 @@ tuwunel:
       - ReadWriteMany
     size: 20Gi
     existingClaim: ""
+    storageClassName: ""
     mountPath: /data/conduwuit
     nas:
       server: ""
@@ -203,6 +213,7 @@ tuwunel:
   affinity: {}
 
 elementWeb:
+  deploymentName: ""
   image:
     registry: registry.cn-hangzhou.aliyuncs.com
     repository: hiclaw-cloud/element-web
@@ -231,3 +242,44 @@ elementWeb:
 
 nameOverride: ""
 fullnameOverride: ""
+
+# ── MinIO（仅通用 k8s 模式，global.platform 为空时部署）──────────────────────
+minio:
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  service:
+    type: ClusterIP
+    apiPort: 9000
+    consolePort: 9001
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
+  auth:
+    rootUser: "minioadmin"
+    rootPassword: "minioadmin"
+  bucketName: "hiclaw"
+
+# ── Higress AI 网关（仅通用 k8s 模式，需设置 higress.enabled: true）────────
+# Higress 通过 Helm 子 Chart 依赖部署。通用 k8s 模式下启用，阿里云模式下使用外部 APIG。
+# 完整参数参考：https://higress.io/en/docs/latest/user/configurations/
+higress:
+  enabled: false
+  global:
+    local: true          # kind / minikube 等本地集群设为 true
+  higress-core:
+    gateway:
+      replicas: 1
+      httpPort: 80
+      httpsPort: 443
+    controller:
+      replicas: 1

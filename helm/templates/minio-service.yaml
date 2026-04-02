@@ -1,0 +1,22 @@
+{{- if (include "hiclaw.isGenericK8s" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hiclaw.minio.fullname" . }}
+  namespace: {{ include "hiclaw.namespace" . }}
+  labels:
+    {{- include "hiclaw.minio.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.minio.service.type }}
+  selector:
+    {{- include "hiclaw.minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.minio.service.apiPort }}
+      targetPort: api
+      protocol: TCP
+    - name: console
+      port: {{ .Values.minio.service.consolePort }}
+      targetPort: console
+      protocol: TCP
+{{- end }}

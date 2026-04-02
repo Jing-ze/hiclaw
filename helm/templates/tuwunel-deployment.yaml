@@ -73,7 +73,7 @@ spec:
             - name: CONDUWUIT_REGISTRATION_TOKEN
               value: {{ coalesce $regLit $regEnv | quote }}
             {{- else }}
-            {{- fail "Set manager.secret.stringData.HICLAW_REGISTRATION_TOKEN or manager.env.HICLAW_REGISTRATION_TOKEN (or manager.envFromSecret containing that key) for Tuwunel" }}
+            {{- fail "Set global.secret.stringData.HICLAW_REGISTRATION_TOKEN or manager.env.HICLAW_REGISTRATION_TOKEN (or manager.envFromSecret containing that key) for Tuwunel" }}
             {{- end }}
             {{- with .Values.tuwunel.extraEnv }}
             {{- toYaml . | nindent 12 }}
