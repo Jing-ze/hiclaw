@@ -891,6 +891,9 @@ elif container_api_available; then
         --arg fs_access_key "${WORKER_NAME}" \
         --arg fs_secret_key "${WORKER_MINIO_PASSWORD}" \
         --arg orchestrator_url "${HICLAW_ORCHESTRATOR_URL:-}" \
+        --arg nacos_username "${HICLAW_NACOS_USERNAME:-}" \
+        --arg nacos_password "${HICLAW_NACOS_PASSWORD:-}" \
+        --arg nacos_token "${HICLAW_NACOS_TOKEN:-}" \
         '{
             "HICLAW_WORKER_NAME": $worker_name,
             "HICLAW_WORKER_GATEWAY_KEY": $worker_key,
@@ -906,6 +909,9 @@ elif container_api_available; then
         | if $oss_bucket != "" then . + { "HICLAW_OSS_BUCKET": $oss_bucket, "HICLAW_REGION": $region } else . end
         | if $skills_api_url != "" then . + { "SKILLS_API_URL": $skills_api_url } else . end
         | if $console_port != "" then . + { "HICLAW_CONSOLE_PORT": $console_port } else . end
+        | if $nacos_username != "" then . + { "HICLAW_NACOS_USERNAME": $nacos_username } else . end
+        | if $nacos_password != "" then . + { "HICLAW_NACOS_PASSWORD": $nacos_password } else . end
+        | if $nacos_token != "" then . + { "HICLAW_NACOS_TOKEN": $nacos_token } else . end
         | if $runtime != "copaw" then
             . + {
                 "OPENCLAW_DISABLE_BONJOUR": "1",
