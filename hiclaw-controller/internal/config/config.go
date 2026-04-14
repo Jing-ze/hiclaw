@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -67,12 +69,14 @@ type Config struct {
 	K8sWorkerMemory string
 
 	// Manager deployment (Initializer creates the Manager CR if enabled)
-	ManagerEnabled   bool
-	ManagerModel     string
-	ManagerRuntime   string
-	ManagerImage     string
-	K8sManagerCPU    string
-	K8sManagerMemory string
+	ManagerEnabled          bool
+	ManagerModel            string
+	ManagerRuntime          string
+	ManagerImage            string
+	K8sManagerCPURequest    string
+	K8sManagerMemoryRequest string
+	K8sManagerCPU           string
+	K8sManagerMemory        string
 
 	// Controller URL (advertised to workers for STS refresh etc.)
 	ControllerURL string
@@ -100,9 +104,9 @@ type Config struct {
 	ModelMaxTokens     int
 
 	// LLM provider (for Gateway initialization)
-	LLMProvider    string
-	LLMAPIKey      string
-	OpenAIBaseURL  string // HICLAW_OPENAI_BASE_URL — custom base URL for openai-compat providers
+	LLMProvider   string
+	LLMAPIKey     string
+	OpenAIBaseURL string // HICLAW_OPENAI_BASE_URL — custom base URL for openai-compat providers
 
 	// Element Web URL (for Gateway route initialization)
 	ElementWebURL string
@@ -132,6 +136,23 @@ type WorkerEnvDefaults struct {
 	MatrixURL     string
 	AdminUser     string
 	Runtime       string // "docker" for embedded, "k8s" for incluster
+}
+
+type managerSpecEnv struct {
+	Model     string               `json:"model"`
+	Runtime   string               `json:"runtime"`
+	Image     string               `json:"image"`
+	Resources managerSpecResources `json:"resources"`
+}
+
+type managerSpecResources struct {
+	Requests managerSpecResourceValues `json:"requests"`
+	Limits   managerSpecResourceValues `json:"limits"`
+}
+
+type managerSpecResourceValues struct {
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
 }
 
 func LoadConfig() *Config {
@@ -188,12 +209,14 @@ func LoadConfig() *Config {
 		K8sWorkerCPU:    envOrDefault("HICLAW_K8S_WORKER_CPU", "1000m"),
 		K8sWorkerMemory: envOrDefault("HICLAW_K8S_WORKER_MEMORY", "2Gi"),
 
-		ManagerEnabled:   envOrDefault("HICLAW_MANAGER_ENABLED", "true") == "true",
-		ManagerModel:     firstNonEmpty(os.Getenv("HICLAW_MANAGER_MODEL"), envOrDefault("HICLAW_DEFAULT_MODEL", "qwen3.5-plus")),
-		ManagerRuntime:   envOrDefault("HICLAW_MANAGER_RUNTIME", "openclaw"),
-		ManagerImage:     os.Getenv("HICLAW_MANAGER_IMAGE"),
-		K8sManagerCPU:    envOrDefault("HICLAW_K8S_MANAGER_CPU", "2"),
-		K8sManagerMemory: envOrDefault("HICLAW_K8S_MANAGER_MEMORY", "4Gi"),
+		ManagerEnabled:          envOrDefault("HICLAW_MANAGER_ENABLED", "true") == "true",
+		ManagerModel:            firstNonEmpty(os.Getenv("HICLAW_MANAGER_MODEL"), envOrDefault("HICLAW_DEFAULT_MODEL", "qwen3.5-plus")),
+		ManagerRuntime:          envOrDefault("HICLAW_MANAGER_RUNTIME", "openclaw"),
+		ManagerImage:            os.Getenv("HICLAW_MANAGER_IMAGE"),
+		K8sManagerCPURequest:    envOrDefault("HICLAW_K8S_MANAGER_CPU_REQUEST", "500m"),
+		K8sManagerMemoryRequest: envOrDefault("HICLAW_K8S_MANAGER_MEMORY_REQUEST", "1Gi"),
+		K8sManagerCPU:           envOrDefault("HICLAW_K8S_MANAGER_CPU", "2"),
+		K8sManagerMemory:        envOrDefault("HICLAW_K8S_MANAGER_MEMORY", "4Gi"),
 
 		ControllerURL: firstNonEmpty(
 			os.Getenv("HICLAW_CONTROLLER_URL"),
@@ -234,7 +257,7 @@ func LoadConfig() *Config {
 			MatrixDomain:  envOrDefault("HICLAW_MATRIX_DOMAIN", "matrix-local.hiclaw.io:8080"),
 			FSEndpoint:    firstNonEmpty(os.Getenv("HICLAW_FS_ENDPOINT"), os.Getenv("HICLAW_MINIO_ENDPOINT")),
 			MinIOEndpoint: os.Getenv("HICLAW_MINIO_ENDPOINT"),
-			MinIOBucket:   os.Getenv("HICLAW_MINIO_BUCKET"),
+			MinIOBucket:   firstNonEmpty(os.Getenv("HICLAW_MINIO_BUCKET"), os.Getenv("HICLAW_OSS_BUCKET")),
 			StoragePrefix: envOrDefault("HICLAW_STORAGE_PREFIX", "hiclaw/hiclaw-storage"),
 			ControllerURL: firstNonEmpty(os.Getenv("HICLAW_CONTROLLER_URL"), os.Getenv("HICLAW_ORCHESTRATOR_URL")),
 			AIGatewayURL:  envOrDefault("HICLAW_AI_GATEWAY_URL", "http://aigw-local.hiclaw.io:8080"),
@@ -251,6 +274,12 @@ func LoadConfig() *Config {
 			cfg.WorkerEnv.MatrixURL = replaceHost(cfg.WorkerEnv.MatrixURL, ctrlHost)
 			cfg.WorkerEnv.MinIOEndpoint = replaceHost(cfg.WorkerEnv.MinIOEndpoint, ctrlHost)
 			cfg.WorkerEnv.FSEndpoint = replaceHost(cfg.WorkerEnv.FSEndpoint, ctrlHost)
+		}
+	}
+
+	if specJSON := os.Getenv("HICLAW_MANAGER_SPEC"); specJSON != "" {
+		if err := applyManagerSpec(cfg, specJSON); err != nil {
+			panic(fmt.Sprintf("invalid HICLAW_MANAGER_SPEC: %v", err))
 		}
 	}
 
@@ -298,9 +327,9 @@ func (c *Config) RegistryPath() string {
 // ManagerResources returns the resource requirements for the Manager Pod.
 func (c *Config) ManagerResources() *backend.ResourceRequirements {
 	return &backend.ResourceRequirements{
-		CPURequest:    "500m",
+		CPURequest:    c.K8sManagerCPURequest,
 		CPULimit:      c.K8sManagerCPU,
-		MemoryRequest: "1Gi",
+		MemoryRequest: c.K8sManagerMemoryRequest,
 		MemoryLimit:   c.K8sManagerMemory,
 	}
 }
@@ -387,6 +416,37 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func applyManagerSpec(cfg *Config, specJSON string) error {
+	var spec managerSpecEnv
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return err
+	}
+
+	if spec.Model != "" {
+		cfg.ManagerModel = spec.Model
+	}
+	if spec.Runtime != "" {
+		cfg.ManagerRuntime = spec.Runtime
+	}
+	if spec.Image != "" {
+		cfg.ManagerImage = spec.Image
+	}
+	if spec.Resources.Requests.CPU != "" {
+		cfg.K8sManagerCPURequest = spec.Resources.Requests.CPU
+	}
+	if spec.Resources.Requests.Memory != "" {
+		cfg.K8sManagerMemoryRequest = spec.Resources.Requests.Memory
+	}
+	if spec.Resources.Limits.CPU != "" {
+		cfg.K8sManagerCPU = spec.Resources.Limits.CPU
+	}
+	if spec.Resources.Limits.Memory != "" {
+		cfg.K8sManagerMemory = spec.Resources.Limits.Memory
+	}
+
+	return nil
+}
+
 // extractHost returns the hostname from a URL (e.g. "http://hiclaw-controller:8090" → "hiclaw-controller").
 func extractHost(rawURL string) string {
 	u, err := url.Parse(rawURL)
@@ -448,7 +508,7 @@ func (c *Config) OSSConfig() oss.Config {
 	return oss.Config{
 		StoragePrefix: c.OSSStoragePrefix,
 		Bucket:        c.OSSBucket,
-		Endpoint:      os.Getenv("HICLAW_MINIO_ENDPOINT"),
+		Endpoint:      firstNonEmpty(os.Getenv("HICLAW_FS_ENDPOINT"), os.Getenv("HICLAW_MINIO_ENDPOINT")),
 		AccessKey:     accessKey,
 		SecretKey:     secretKey,
 	}
