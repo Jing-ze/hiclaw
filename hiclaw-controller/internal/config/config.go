@@ -41,16 +41,8 @@ type Config struct {
 	// Worker backend selection
 	WorkerBackend string
 
-	// SAE Backend
-	Region              string
-	SAENamespaceID      string
-	SAEWorkerImage      string
-	SAECopawWorkerImage string
-	SAEVPCID            string
-	SAEVSwitchID        string
-	SAESecurityGroupID  string
-	SAEWorkerCPU        int32
-	SAEWorkerMemory     int32
+	// Region (used by APIG, STS, etc.)
+	Region string
 
 	// APIG Gateway
 	GWGatewayID  string
@@ -185,15 +177,7 @@ func LoadConfig() *Config {
 			os.Getenv("HICLAW_ALIYUN_WORKER_BACKEND"),
 		),
 
-		Region:              envOrDefault("HICLAW_REGION", "cn-hangzhou"),
-		SAENamespaceID:      os.Getenv("HICLAW_SAE_NAMESPACE_ID"),
-		SAEWorkerImage:      os.Getenv("HICLAW_SAE_WORKER_IMAGE"),
-		SAECopawWorkerImage: os.Getenv("HICLAW_SAE_COPAW_WORKER_IMAGE"),
-		SAEVPCID:            os.Getenv("HICLAW_SAE_VPC_ID"),
-		SAEVSwitchID:        os.Getenv("HICLAW_SAE_VSWITCH_ID"),
-		SAESecurityGroupID:  os.Getenv("HICLAW_SAE_SECURITY_GROUP_ID"),
-		SAEWorkerCPU:        int32(envOrDefaultInt("HICLAW_SAE_WORKER_CPU", 1000)),
-		SAEWorkerMemory:     int32(envOrDefaultInt("HICLAW_SAE_WORKER_MEMORY", 2048)),
+		Region: envOrDefault("HICLAW_REGION", "cn-hangzhou"),
 
 		GWGatewayID:  os.Getenv("HICLAW_GW_GATEWAY_ID"),
 		GWModelAPIID: os.Getenv("HICLAW_GW_MODEL_API_ID"),
@@ -334,20 +318,6 @@ func (c *Config) DockerConfig() backend.DockerConfig {
 		WorkerImage:      envOrDefault("HICLAW_WORKER_IMAGE", "hiclaw/worker-agent:latest"),
 		CopawWorkerImage: envOrDefault("HICLAW_COPAW_WORKER_IMAGE", "hiclaw/copaw-worker:latest"),
 		DefaultNetwork:   envOrDefault("HICLAW_DOCKER_NETWORK", "hiclaw-net"),
-	}
-}
-
-func (c *Config) SAEConfig() backend.SAEConfig {
-	return backend.SAEConfig{
-		Region:           c.Region,
-		NamespaceID:      c.SAENamespaceID,
-		WorkerImage:      c.SAEWorkerImage,
-		CopawWorkerImage: c.SAECopawWorkerImage,
-		VPCID:            c.SAEVPCID,
-		VSwitchID:        c.SAEVSwitchID,
-		SecurityGroupID:  c.SAESecurityGroupID,
-		CPU:              c.SAEWorkerCPU,
-		Memory:           c.SAEWorkerMemory,
 	}
 }
 

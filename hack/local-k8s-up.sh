@@ -97,11 +97,13 @@ if [ "$SKIP_BUILD" = "0" ]; then
     log "Building worker image (openclaw)..."
     docker build -t "$WORKER_IMAGE" \
         --build-arg OPENCLAW_BASE_IMAGE=higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/openclaw-base:latest \
+        --build-arg HICLAW_CONTROLLER_IMAGE="$CONTROLLER_IMAGE" \
         --build-context shared="${PROJECT_ROOT}/shared/lib" \
         -f "${PROJECT_ROOT}/worker/Dockerfile" "${PROJECT_ROOT}/worker"
 
     log "Building worker image (copaw)..."
     docker build -t "$COPAW_WORKER_IMAGE" \
+        --build-arg HICLAW_CONTROLLER_IMAGE="$CONTROLLER_IMAGE" \
         --build-context shared="${PROJECT_ROOT}/shared/lib" \
         -f "${PROJECT_ROOT}/copaw/Dockerfile" "${PROJECT_ROOT}/copaw"
 
@@ -196,13 +198,23 @@ log "  Username: admin"
 if [ -n "$ADMIN_PASSWORD" ]; then
     log "  Password: ${ADMIN_PASSWORD}"
 else
-    log "  Password: (auto-generated, view with: kubectl get secret -n ${NAMESPACE} -o jsonpath='{.data.HICLAW_ADMIN_PASSWORD}' \$(kubectl get secret -n ${NAMESPACE} -l app.kubernetes.io/instance=hiclaw -o name | head -1) | base64 -d)"
+    AUTO_ADMIN_PASSWORD=$(kubectl get secret -n "${NAMESPACE}" hiclaw-runtime-env -o jsonpath='{.data.HICLAW_ADMIN_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null)
+    if [ -n "$AUTO_ADMIN_PASSWORD" ]; then
+        log "  Password: ${AUTO_ADMIN_PASSWORD}"
+    else
+        log "  Password: (unable to retrieve, check secret hiclaw-runtime-env in namespace ${NAMESPACE})"
+    fi
 fi
 echo ""
 if [ -n "$REGISTRATION_TOKEN" ]; then
     log "Registration token: ${REGISTRATION_TOKEN}"
 else
-    log "Registration token: (auto-generated, stored in K8s Secret)"
+    AUTO_REG_TOKEN=$(kubectl get secret -n "${NAMESPACE}" hiclaw-runtime-env -o jsonpath='{.data.HICLAW_REGISTRATION_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null)
+    if [ -n "$AUTO_REG_TOKEN" ]; then
+        log "Registration token: ${AUTO_REG_TOKEN}"
+    else
+        log "Registration token: (unable to retrieve, check secret hiclaw-runtime-env in namespace ${NAMESPACE})"
+    fi
 fi
 echo ""
 log "Access Element Web:"

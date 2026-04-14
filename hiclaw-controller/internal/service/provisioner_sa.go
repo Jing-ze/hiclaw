@@ -141,7 +141,7 @@ func (p *Provisioner) RequestManagerSAToken(ctx context.Context, managerName str
 	return result.Status.Token, nil
 }
 
-// RequestSAToken issues a short-lived SA token for non-K8s backends (Docker/SAE).
+// RequestSAToken issues a short-lived SA token for non-K8s backends (Docker).
 func (p *Provisioner) RequestSAToken(ctx context.Context, workerName string) (string, error) {
 	if p.k8sClient == nil {
 		return "", nil
