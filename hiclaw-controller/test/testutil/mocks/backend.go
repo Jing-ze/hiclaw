@@ -11,6 +11,8 @@ import (
 type MockWorkerBackend struct {
 	mu sync.Mutex
 
+	NameOverride string
+
 	CreateFn func(ctx context.Context, req backend.CreateRequest) (*backend.WorkerResult, error)
 	DeleteFn func(ctx context.Context, name string) error
 	StartFn  func(ctx context.Context, name string) error
@@ -21,6 +23,10 @@ type MockWorkerBackend struct {
 	Calls struct {
 		Create []string
 		Delete []string
+		Start  []string
+		Stop   []string
+		Status []string
+		List   int
 	}
 }
 
@@ -28,10 +34,35 @@ func NewMockWorkerBackend() *MockWorkerBackend {
 	return &MockWorkerBackend{}
 }
 
-func (m *MockWorkerBackend) Name() string           { return "mock" }
-func (m *MockWorkerBackend) DeploymentMode() string  { return backend.DeployLocal }
-func (m *MockWorkerBackend) Available(_ context.Context) bool { return true }
-func (m *MockWorkerBackend) NeedsCredentialInjection() bool  { return false }
+func (m *MockWorkerBackend) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Calls = struct {
+		Create []string
+		Delete []string
+		Start  []string
+		Stop   []string
+		Status []string
+		List   int
+	}{}
+	m.NameOverride = ""
+	m.CreateFn = nil
+	m.DeleteFn = nil
+	m.StartFn = nil
+	m.StopFn = nil
+	m.StatusFn = nil
+	m.ListFn = nil
+}
+
+func (m *MockWorkerBackend) Name() string {
+	if m.NameOverride != "" {
+		return m.NameOverride
+	}
+	return "mock"
+}
+func (m *MockWorkerBackend) DeploymentMode() string                { return backend.DeployLocal }
+func (m *MockWorkerBackend) Available(_ context.Context) bool      { return true }
+func (m *MockWorkerBackend) NeedsCredentialInjection() bool        { return false }
 
 func (m *MockWorkerBackend) Create(ctx context.Context, req backend.CreateRequest) (*backend.WorkerResult, error) {
 	m.mu.Lock()
@@ -42,7 +73,7 @@ func (m *MockWorkerBackend) Create(ctx context.Context, req backend.CreateReques
 	}
 	return &backend.WorkerResult{
 		Name:    req.Name,
-		Backend: "mock",
+		Backend: m.Name(),
 		Status:  backend.StatusStarting,
 	}, nil
 }
@@ -58,6 +89,9 @@ func (m *MockWorkerBackend) Delete(ctx context.Context, name string) error {
 }
 
 func (m *MockWorkerBackend) Start(ctx context.Context, name string) error {
+	m.mu.Lock()
+	m.Calls.Start = append(m.Calls.Start, name)
+	m.mu.Unlock()
 	if m.StartFn != nil {
 		return m.StartFn(ctx, name)
 	}
@@ -65,6 +99,9 @@ func (m *MockWorkerBackend) Start(ctx context.Context, name string) error {
 }
 
 func (m *MockWorkerBackend) Stop(ctx context.Context, name string) error {
+	m.mu.Lock()
+	m.Calls.Stop = append(m.Calls.Stop, name)
+	m.mu.Unlock()
 	if m.StopFn != nil {
 		return m.StopFn(ctx, name)
 	}
@@ -72,17 +109,23 @@ func (m *MockWorkerBackend) Stop(ctx context.Context, name string) error {
 }
 
 func (m *MockWorkerBackend) Status(ctx context.Context, name string) (*backend.WorkerResult, error) {
+	m.mu.Lock()
+	m.Calls.Status = append(m.Calls.Status, name)
+	m.mu.Unlock()
 	if m.StatusFn != nil {
 		return m.StatusFn(ctx, name)
 	}
 	return &backend.WorkerResult{
 		Name:    name,
-		Backend: "mock",
+		Backend: m.Name(),
 		Status:  backend.StatusRunning,
 	}, nil
 }
 
 func (m *MockWorkerBackend) List(ctx context.Context) ([]backend.WorkerResult, error) {
+	m.mu.Lock()
+	m.Calls.List++
+	m.mu.Unlock()
 	if m.ListFn != nil {
 		return m.ListFn(ctx)
 	}

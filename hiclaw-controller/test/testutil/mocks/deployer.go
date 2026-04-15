@@ -12,16 +12,18 @@ import (
 type MockDeployer struct {
 	mu sync.Mutex
 
-	DeployPackageFn      func(ctx context.Context, name, uri string, isUpdate bool) error
-	WriteInlineConfigsFn func(name string, spec v1beta1.WorkerSpec) error
+	DeployPackageFn      func(ctx context.Context, workerName string, pkg string, isUpdate bool) error
+	WriteInlineConfigsFn func(workerName string, spec v1beta1.WorkerSpec) error
 	DeployWorkerConfigFn func(ctx context.Context, req service.WorkerDeployRequest) error
 	PushOnDemandSkillsFn func(ctx context.Context, workerName string, skills []string) error
 	CleanupOSSDataFn     func(ctx context.Context, workerName string) error
 
 	Calls struct {
-		DeployPackage     []string
-		DeployWorkerConfig []string
-		CleanupOSSData    []string
+		DeployPackage      []string
+		WriteInlineConfigs []string
+		DeployWorkerConfig []service.WorkerDeployRequest
+		PushOnDemandSkills []string
+		CleanupOSSData     []string
 	}
 }
 
@@ -29,26 +31,46 @@ func NewMockDeployer() *MockDeployer {
 	return &MockDeployer{}
 }
 
-func (m *MockDeployer) DeployPackage(ctx context.Context, name, uri string, isUpdate bool) error {
+func (m *MockDeployer) Reset() {
 	m.mu.Lock()
-	m.Calls.DeployPackage = append(m.Calls.DeployPackage, name)
+	defer m.mu.Unlock()
+	m.Calls = struct {
+		DeployPackage      []string
+		WriteInlineConfigs []string
+		DeployWorkerConfig []service.WorkerDeployRequest
+		PushOnDemandSkills []string
+		CleanupOSSData     []string
+	}{}
+	m.DeployPackageFn = nil
+	m.WriteInlineConfigsFn = nil
+	m.DeployWorkerConfigFn = nil
+	m.PushOnDemandSkillsFn = nil
+	m.CleanupOSSDataFn = nil
+}
+
+func (m *MockDeployer) DeployPackage(ctx context.Context, workerName string, pkg string, isUpdate bool) error {
+	m.mu.Lock()
+	m.Calls.DeployPackage = append(m.Calls.DeployPackage, workerName)
 	m.mu.Unlock()
 	if m.DeployPackageFn != nil {
-		return m.DeployPackageFn(ctx, name, uri, isUpdate)
+		return m.DeployPackageFn(ctx, workerName, pkg, isUpdate)
 	}
 	return nil
 }
 
-func (m *MockDeployer) WriteInlineConfigs(name string, spec v1beta1.WorkerSpec) error {
+func (m *MockDeployer) WriteInlineConfigs(workerName string, spec v1beta1.WorkerSpec) error {
+	m.mu.Lock()
+	m.Calls.WriteInlineConfigs = append(m.Calls.WriteInlineConfigs, workerName)
+	m.mu.Unlock()
 	if m.WriteInlineConfigsFn != nil {
-		return m.WriteInlineConfigsFn(name, spec)
+		return m.WriteInlineConfigsFn(workerName, spec)
 	}
 	return nil
 }
 
 func (m *MockDeployer) DeployWorkerConfig(ctx context.Context, req service.WorkerDeployRequest) error {
 	m.mu.Lock()
-	m.Calls.DeployWorkerConfig = append(m.Calls.DeployWorkerConfig, req.Name)
+	m.Calls.DeployWorkerConfig = append(m.Calls.DeployWorkerConfig, req)
 	m.mu.Unlock()
 	if m.DeployWorkerConfigFn != nil {
 		return m.DeployWorkerConfigFn(ctx, req)
@@ -57,6 +79,9 @@ func (m *MockDeployer) DeployWorkerConfig(ctx context.Context, req service.Worke
 }
 
 func (m *MockDeployer) PushOnDemandSkills(ctx context.Context, workerName string, skills []string) error {
+	m.mu.Lock()
+	m.Calls.PushOnDemandSkills = append(m.Calls.PushOnDemandSkills, workerName)
+	m.mu.Unlock()
 	if m.PushOnDemandSkillsFn != nil {
 		return m.PushOnDemandSkillsFn(ctx, workerName, skills)
 	}

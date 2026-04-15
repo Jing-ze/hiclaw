@@ -111,25 +111,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// resetMocks resets all mock call records between tests.
+// resetMocks resets all mock call records and Fn overrides between tests.
 func resetMocks() {
-	mockProv.Calls.ProvisionWorker = nil
-	mockProv.Calls.DeprovisionWorker = nil
-	mockProv.Calls.RefreshCredentials = nil
-	mockDeploy.Calls.DeployPackage = nil
-	mockDeploy.Calls.DeployWorkerConfig = nil
-	mockDeploy.Calls.CleanupOSSData = nil
-	mockBackend.Calls.Create = nil
-	mockBackend.Calls.Delete = nil
-
-	// Reset function overrides to defaults
-	mockProv.ProvisionWorkerFn = nil
-	mockProv.DeprovisionWorkerFn = nil
-	mockProv.RefreshCredentialsFn = nil
-	mockDeploy.DeployPackageFn = nil
-	mockDeploy.DeployWorkerConfigFn = nil
-	mockBackend.CreateFn = nil
-	mockBackend.DeleteFn = nil
+	mockProv.Reset()
+	mockDeploy.Reset()
+	mockBackend.Reset()
+	mockEnv.Reset()
 }
 
 // suppress unused import for v1beta1
