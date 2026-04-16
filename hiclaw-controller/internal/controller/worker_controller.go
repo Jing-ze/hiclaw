@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
@@ -46,7 +45,7 @@ func (r *WorkerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 
-	patchBase := client.MergeFromWithOptions(worker.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	patchBase := client.MergeFrom(worker.DeepCopy())
 
 	s := &workerScope{
 		worker:    &worker,
@@ -233,6 +232,3 @@ func roleForAnnotations(role, teamLeaderName string) string {
 	}
 	return "standalone"
 }
-
-// Suppress unused import for fmt (used by sub-reconcilers in other files).
-var _ = fmt.Errorf

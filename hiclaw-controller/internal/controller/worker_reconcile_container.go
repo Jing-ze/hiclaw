@@ -51,30 +51,47 @@ func (r *WorkerReconciler) ensureContainerPresent(ctx context.Context, s *worker
 
 	logger := log.FromContext(ctx)
 	result, err := wb.Status(ctx, w.Name)
-	if err == nil {
-		switch result.Status {
-		case backend.StatusRunning, backend.StatusStarting, backend.StatusReady:
-			if w.Generation != w.Status.ObservedGeneration {
-				logger.Info("spec changed, recreating container",
-					"generation", w.Generation,
-					"observedGeneration", w.Status.ObservedGeneration)
-				if err := wb.Delete(ctx, w.Name); err != nil && !errors.Is(err, backend.ErrNotFound) {
-					return reconcile.Result{}, fmt.Errorf("delete container for recreate: %w", err)
-				}
-				return r.createWorkerContainer(ctx, s, wb)
-			}
-			return reconcile.Result{}, nil
-		case backend.StatusStopped:
-			if wb.Name() == "docker" {
-				if err := wb.Start(ctx, w.Name); err != nil {
-					return reconcile.Result{}, fmt.Errorf("start container: %w", err)
-				}
-				return reconcile.Result{}, nil
-			}
-		}
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("query container status: %w", err)
 	}
 
-	return r.createWorkerContainer(ctx, s, wb)
+	specChanged := w.Generation != w.Status.ObservedGeneration
+
+	switch result.Status {
+	case backend.StatusRunning, backend.StatusStarting, backend.StatusReady:
+		if !specChanged {
+			return reconcile.Result{}, nil
+		}
+		logger.Info("spec changed, recreating container",
+			"generation", w.Generation,
+			"observedGeneration", w.Status.ObservedGeneration)
+		if err := wb.Delete(ctx, w.Name); err != nil && !errors.Is(err, backend.ErrNotFound) {
+			return reconcile.Result{}, fmt.Errorf("delete container for recreate: %w", err)
+		}
+		return r.createWorkerContainer(ctx, s, wb)
+
+	case backend.StatusStopped:
+		if wb.Name() == "docker" && !specChanged {
+			if err := wb.Start(ctx, w.Name); err != nil {
+				return reconcile.Result{}, fmt.Errorf("start container: %w", err)
+			}
+			return reconcile.Result{}, nil
+		}
+		if err := wb.Delete(ctx, w.Name); err != nil && !errors.Is(err, backend.ErrNotFound) {
+			return reconcile.Result{}, fmt.Errorf("delete stale container: %w", err)
+		}
+		return r.createWorkerContainer(ctx, s, wb)
+
+	case backend.StatusNotFound:
+		return r.createWorkerContainer(ctx, s, wb)
+
+	default:
+		logger.Info("container in unexpected state, recreating", "status", result.Status)
+		if err := wb.Delete(ctx, w.Name); err != nil && !errors.Is(err, backend.ErrNotFound) {
+			return reconcile.Result{}, fmt.Errorf("delete container in unknown state: %w", err)
+		}
+		return r.createWorkerContainer(ctx, s, wb)
+	}
 }
 
 // ensureContainerAbsent ensures a worker container is not running.
@@ -92,7 +109,6 @@ func (r *WorkerReconciler) ensureContainerAbsent(ctx context.Context, s *workerS
 	}
 
 	if remove {
-		_ = wb.Stop(ctx, w.Name)
 		if err := wb.Delete(ctx, w.Name); err != nil && !errors.Is(err, backend.ErrNotFound) {
 			return reconcile.Result{}, fmt.Errorf("delete container: %w", err)
 		}

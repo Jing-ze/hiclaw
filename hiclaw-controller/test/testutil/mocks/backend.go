@@ -204,7 +204,11 @@ func (m *MockWorkerBackend) Status(ctx context.Context, name string) (*backend.W
 			Status:  state,
 		}, nil
 	}
-	return nil, backend.ErrNotFound
+	return &backend.WorkerResult{
+		Name:    name,
+		Backend: m.Name(),
+		Status:  backend.StatusNotFound,
+	}, nil
 }
 
 func (m *MockWorkerBackend) List(ctx context.Context) ([]backend.WorkerResult, error) {

@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -19,7 +18,7 @@ func (r *WorkerReconciler) reconcileInfrastructure(ctx context.Context, s *worke
 	if w.Status.MatrixUserID != "" {
 		refreshResult, err := r.Provisioner.RefreshCredentials(ctx, w.Name)
 		if err != nil {
-			return reconcile.Result{RequeueAfter: time.Minute}, fmt.Errorf("refresh credentials: %w", err)
+			return reconcile.Result{}, fmt.Errorf("refresh credentials: %w", err)
 		}
 		s.provResult = &service.WorkerProvisionResult{
 			MatrixUserID:   w.Status.MatrixUserID,
@@ -46,7 +45,7 @@ func (r *WorkerReconciler) reconcileInfrastructure(ctx context.Context, s *worke
 		McpServers:     w.Spec.McpServers,
 	})
 	if err != nil {
-		return reconcile.Result{RequeueAfter: time.Minute}, fmt.Errorf("provision worker: %w", err)
+		return reconcile.Result{}, fmt.Errorf("provision worker: %w", err)
 	}
 
 	w.Status.MatrixUserID = provResult.MatrixUserID
@@ -54,7 +53,7 @@ func (r *WorkerReconciler) reconcileInfrastructure(ctx context.Context, s *worke
 	s.provResult = provResult
 
 	if err := r.Provisioner.EnsureServiceAccount(ctx, w.Name); err != nil {
-		return reconcile.Result{RequeueAfter: time.Minute}, fmt.Errorf("ServiceAccount creation: %w", err)
+		return reconcile.Result{}, fmt.Errorf("ServiceAccount creation: %w", err)
 	}
 
 	return reconcile.Result{}, nil
