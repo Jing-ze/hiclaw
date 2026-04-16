@@ -11,7 +11,6 @@ import (
 	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/service"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -310,12 +309,12 @@ func (r *ManagerReconciler) handleDelete(ctx context.Context, m *v1beta1.Manager
 		logger.Error(err, "deprovision failed (non-fatal)")
 	}
 
-	// Delete manager pod by exact name (bypasses backend's default worker prefix)
-	managerPod := &corev1.Pod{}
-	managerPod.Name = managerContainerName(managerName)
-	managerPod.Namespace = m.Namespace
-	if err := r.Delete(ctx, managerPod); err != nil && !apierrors.IsNotFound(err) {
-		logger.Error(err, "failed to delete manager pod (may already be removed)")
+	// Delete manager container/pod via backend (WithPrefix("") ensures correct name)
+	if wb := r.managerBackend(ctx); wb != nil {
+		containerName := managerContainerName(managerName)
+		if err := wb.Delete(ctx, containerName); err != nil && !errors.Is(err, backend.ErrNotFound) {
+			logger.Error(err, "failed to delete manager container (may already be removed)")
+		}
 	}
 
 	// Clean up OSS data
@@ -379,10 +378,10 @@ func (r *ManagerReconciler) reconcileDesiredState(ctx context.Context, m *v1beta
 	}
 }
 
-// managerBackend returns the WorkerBackend with Docker's container prefix cleared.
-// Manager containers are created with ContainerName override (e.g. "hiclaw-manager"),
-// which doesn't include the default worker prefix ("hiclaw-worker-").  Without this
-// adjustment, Docker backend's Status/Stop/Delete/Start would look for the wrong name.
+// managerBackend returns the WorkerBackend with the container prefix cleared.
+// Manager containers use explicit full names (e.g. "hiclaw-manager") rather than
+// the default worker prefix ("hiclaw-worker-"), so we need WithPrefix("") to
+// ensure Status/Stop/Delete/Start operate on the correct container/pod name.
 func (r *ManagerReconciler) managerBackend(ctx context.Context) backend.WorkerBackend {
 	if r.Backend == nil {
 		return nil
@@ -391,12 +390,14 @@ func (r *ManagerReconciler) managerBackend(ctx context.Context) backend.WorkerBa
 	if wb == nil {
 		return nil
 	}
-	// Docker backend always prepends containerPrefix to name parameters.
-	// Manager containers use a different naming scheme, so strip the prefix.
-	if docker, ok := wb.(*backend.DockerBackend); ok {
-		return docker.WithPrefix("")
+	switch b := wb.(type) {
+	case *backend.DockerBackend:
+		return b.WithPrefix("")
+	case *backend.K8sBackend:
+		return b.WithPrefix("")
+	default:
+		return wb
 	}
-	return wb
 }
 
 func (r *ManagerReconciler) ensureManagerRunning(ctx context.Context, m *v1beta1.Manager) (reconcile.Result, error) {
