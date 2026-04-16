@@ -44,10 +44,10 @@ type ManagerEmbeddedConfig struct {
 type ManagerReconciler struct {
 	client.Client
 
-	Provisioner      *service.Provisioner
-	Deployer         *service.Deployer
+	Provisioner      service.ManagerProvisioner
+	Deployer         service.ManagerDeployer
 	Backend          *backend.Registry
-	EnvBuilder       *service.WorkerEnvBuilder
+	EnvBuilder       service.ManagerEnvBuilderI
 	ManagerResources *backend.ResourceRequirements
 	EmbeddedConfig   *ManagerEmbeddedConfig // non-nil in embedded mode only
 }
