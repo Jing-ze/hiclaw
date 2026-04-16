@@ -18,6 +18,7 @@ type WorkerProvisioner interface {
 	DeleteServiceAccount(ctx context.Context, workerName string) error
 	DeleteCredentials(ctx context.Context, workerName string) error
 	RequestSAToken(ctx context.Context, workerName string) (string, error)
+	DeactivateMatrixUser(ctx context.Context, workerName string) error
 	MatrixUserID(name string) string
 }
 

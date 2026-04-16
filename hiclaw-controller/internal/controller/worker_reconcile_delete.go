@@ -17,6 +17,10 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, s *workerScope) 
 	workerName := w.Name
 	isTeamWorker := w.Annotations["hiclaw.io/team-leader"] != ""
 
+	if err := r.Provisioner.DeactivateMatrixUser(ctx, workerName); err != nil {
+		logger.Error(err, "matrix user deactivation failed (non-fatal)")
+	}
+
 	if err := r.Provisioner.DeprovisionWorker(ctx, service.WorkerDeprovisionRequest{
 		Name:         workerName,
 		IsTeamWorker: isTeamWorker,

@@ -60,9 +60,9 @@ func (m *MockWorkerBackend) Name() string {
 	}
 	return "mock"
 }
-func (m *MockWorkerBackend) DeploymentMode() string                { return backend.DeployLocal }
-func (m *MockWorkerBackend) Available(_ context.Context) bool      { return true }
-func (m *MockWorkerBackend) NeedsCredentialInjection() bool        { return false }
+func (m *MockWorkerBackend) DeploymentMode() string           { return backend.DeployLocal }
+func (m *MockWorkerBackend) Available(_ context.Context) bool { return true }
+func (m *MockWorkerBackend) NeedsCredentialInjection() bool   { return false }
 
 func (m *MockWorkerBackend) Create(ctx context.Context, req backend.CreateRequest) (*backend.WorkerResult, error) {
 	m.mu.Lock()
@@ -130,6 +130,18 @@ func (m *MockWorkerBackend) List(ctx context.Context) ([]backend.WorkerResult, e
 		return m.ListFn(ctx)
 	}
 	return nil, nil
+}
+
+// CallSnapshot returns a snapshot of call records safe for concurrent use.
+func (m *MockWorkerBackend) CallSnapshot() (creates, deletes, starts, stops, statuses []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	creates = append([]string{}, m.Calls.Create...)
+	deletes = append([]string{}, m.Calls.Delete...)
+	starts = append([]string{}, m.Calls.Start...)
+	stops = append([]string{}, m.Calls.Stop...)
+	statuses = append([]string{}, m.Calls.Status...)
+	return
 }
 
 var _ backend.WorkerBackend = (*MockWorkerBackend)(nil)

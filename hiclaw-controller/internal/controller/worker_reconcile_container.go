@@ -34,8 +34,10 @@ func (r *WorkerReconciler) reconcileContainer(ctx context.Context, s *workerScop
 }
 
 // ensureContainerPresent ensures a worker container is running. If the
-// container does not exist or was deleted, it is (re)created. If it exists
-// but is stopped (Docker), it is started.
+// container does not exist or was deleted, it is (re)created. If the spec
+// has changed (Generation != ObservedGeneration) while the container is
+// running, the old container is deleted and a new one created so the worker
+// picks up the latest configuration on startup.
 func (r *WorkerReconciler) ensureContainerPresent(ctx context.Context, s *workerScope) (reconcile.Result, error) {
 	w := s.worker
 	if r.Backend == nil {
@@ -47,10 +49,20 @@ func (r *WorkerReconciler) ensureContainerPresent(ctx context.Context, s *worker
 		return reconcile.Result{}, nil
 	}
 
+	logger := log.FromContext(ctx)
 	result, err := wb.Status(ctx, w.Name)
 	if err == nil {
 		switch result.Status {
 		case backend.StatusRunning, backend.StatusStarting, backend.StatusReady:
+			if w.Generation != w.Status.ObservedGeneration {
+				logger.Info("spec changed, recreating container",
+					"generation", w.Generation,
+					"observedGeneration", w.Status.ObservedGeneration)
+				if err := wb.Delete(ctx, w.Name); err != nil && !errors.Is(err, backend.ErrNotFound) {
+					return reconcile.Result{}, fmt.Errorf("delete container for recreate: %w", err)
+				}
+				return r.createWorkerContainer(ctx, s, wb)
+			}
 			return reconcile.Result{}, nil
 		case backend.StatusStopped:
 			if wb.Name() == "docker" {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
+	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"github.com/hiclaw/hiclaw-controller/test/testutil/fixtures"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,10 +66,6 @@ func TestWorkerCreate_HappyPath(t *testing.T) {
 }
 
 func TestWorkerCreate_ProvisionFailure_SetsFailedPhase(t *testing.T) {
-	// Known bug: failCreate ignores Status().Update errors, causing Phase to stay
-	// "Pending" instead of transitioning to "Failed". Will be fixed in Phase 2 reconciler refactor.
-	t.Skip("blocked on reconciler refactor: failCreate Status Update is unreliable (Phase 2)")
-
 	resetMocks()
 
 	mockProv.ProvisionWorkerFn = func(_ context.Context, _ service.WorkerProvisionRequest) (*service.WorkerProvisionResult, error) {
@@ -125,6 +122,7 @@ func TestWorkerDelete_CleansUpAll(t *testing.T) {
 
 	// Reset call counters after create
 	mockProv.Calls.DeprovisionWorker = nil
+	mockProv.Calls.DeactivateMatrixUser = nil
 	mockDeploy.Calls.CleanupOSSData = nil
 
 	// Delete
@@ -143,6 +141,9 @@ func TestWorkerDelete_CleansUpAll(t *testing.T) {
 	})
 
 	// Verify deprovision was called
+	if len(mockProv.Calls.DeactivateMatrixUser) == 0 {
+		t.Error("DeactivateMatrixUser should have been called")
+	}
 	if len(mockProv.Calls.DeprovisionWorker) == 0 {
 		t.Error("DeprovisionWorker should have been called")
 	}
@@ -176,6 +177,70 @@ func TestWorkerFinalizer_AddedOnCreate(t *testing.T) {
 		}
 		return fmt.Errorf("finalizer hiclaw.io/cleanup not found in %v", w.Finalizers)
 	})
+}
+
+func TestWorkerUpdate_SpecChange_RecreatesPod(t *testing.T) {
+	resetMocks()
+
+	workerName := fixtures.UniqueName("test-update")
+	worker := fixtures.NewTestWorker(workerName)
+
+	if err := k8sClient.Create(ctx, worker); err != nil {
+		t.Fatalf("failed to create Worker CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, worker)
+	})
+
+	// Wait for Running
+	assertEventually(t, func() error {
+		var w v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &w); err != nil {
+			return err
+		}
+		if w.Status.Phase != "Running" {
+			return fmt.Errorf("phase=%q, want Running", w.Status.Phase)
+		}
+		return nil
+	})
+
+	// Reset mock calls so we only observe the update path
+	mockBackend.Reset()
+	// Restore default StatusFn to return Running (simulates existing pod)
+	mockBackend.StatusFn = func(_ context.Context, _ string) (*backend.WorkerResult, error) {
+		return &backend.WorkerResult{Status: backend.StatusRunning}, nil
+	}
+
+	// Update spec — change model to trigger Generation increment
+	assertEventually(t, func() error {
+		var w v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &w); err != nil {
+			return err
+		}
+		w.Spec.Model = "claude-sonnet-4-20250514"
+		return k8sClient.Update(ctx, &w)
+	})
+
+	// Eventually: ObservedGeneration should catch up (meaning reconcile completed)
+	assertEventually(t, func() error {
+		var w v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &w); err != nil {
+			return err
+		}
+		if w.Status.ObservedGeneration != w.Generation {
+			return fmt.Errorf("ObservedGeneration=%d, want %d", w.Status.ObservedGeneration, w.Generation)
+		}
+		return nil
+	})
+
+	// Verify: backend should have deleted the old pod and created a new one
+	creates, deletes, _, _, _ := mockBackend.CallSnapshot()
+	if len(deletes) == 0 {
+		t.Error("backend.Delete should have been called to remove old container")
+	}
+	if len(creates) == 0 {
+		t.Error("backend.Create should have been called to create new container")
+	}
 }
 
 // --- Test helpers ---

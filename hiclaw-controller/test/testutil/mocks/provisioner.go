@@ -21,18 +21,20 @@ type MockProvisioner struct {
 	DeleteServiceAccountFn func(ctx context.Context, workerName string) error
 	DeleteCredentialsFn    func(ctx context.Context, workerName string) error
 	RequestSATokenFn       func(ctx context.Context, workerName string) (string, error)
+	DeactivateMatrixUserFn func(ctx context.Context, workerName string) error
 	MatrixUserIDFn         func(name string) string
 
 	Calls struct {
-		ProvisionWorker    []service.WorkerProvisionRequest
-		DeprovisionWorker  []service.WorkerDeprovisionRequest
-		RefreshCredentials []string
-		ReconcileMCPAuth   []string
-		ReconcileExpose    []string
+		ProvisionWorker      []service.WorkerProvisionRequest
+		DeprovisionWorker    []service.WorkerDeprovisionRequest
+		RefreshCredentials   []string
+		ReconcileMCPAuth     []string
+		ReconcileExpose      []string
 		EnsureServiceAccount []string
 		DeleteServiceAccount []string
-		DeleteCredentials  []string
-		RequestSAToken     []string
+		DeleteCredentials    []string
+		RequestSAToken       []string
+		DeactivateMatrixUser []string
 	}
 }
 
@@ -44,15 +46,16 @@ func (m *MockProvisioner) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Calls = struct {
-		ProvisionWorker    []service.WorkerProvisionRequest
-		DeprovisionWorker  []service.WorkerDeprovisionRequest
-		RefreshCredentials []string
-		ReconcileMCPAuth   []string
-		ReconcileExpose    []string
+		ProvisionWorker      []service.WorkerProvisionRequest
+		DeprovisionWorker    []service.WorkerDeprovisionRequest
+		RefreshCredentials   []string
+		ReconcileMCPAuth     []string
+		ReconcileExpose      []string
 		EnsureServiceAccount []string
 		DeleteServiceAccount []string
-		DeleteCredentials  []string
-		RequestSAToken     []string
+		DeleteCredentials    []string
+		RequestSAToken       []string
+		DeactivateMatrixUser []string
 	}{}
 	m.ProvisionWorkerFn = nil
 	m.DeprovisionWorkerFn = nil
@@ -63,6 +66,7 @@ func (m *MockProvisioner) Reset() {
 	m.DeleteServiceAccountFn = nil
 	m.DeleteCredentialsFn = nil
 	m.RequestSATokenFn = nil
+	m.DeactivateMatrixUserFn = nil
 	m.MatrixUserIDFn = nil
 }
 
@@ -166,6 +170,16 @@ func (m *MockProvisioner) RequestSAToken(ctx context.Context, workerName string)
 		return m.RequestSATokenFn(ctx, workerName)
 	}
 	return "mock-sa-token-" + workerName, nil
+}
+
+func (m *MockProvisioner) DeactivateMatrixUser(ctx context.Context, workerName string) error {
+	m.mu.Lock()
+	m.Calls.DeactivateMatrixUser = append(m.Calls.DeactivateMatrixUser, workerName)
+	m.mu.Unlock()
+	if m.DeactivateMatrixUserFn != nil {
+		return m.DeactivateMatrixUserFn(ctx, workerName)
+	}
+	return nil
 }
 
 func (m *MockProvisioner) MatrixUserID(name string) string {
