@@ -218,4 +218,25 @@ func (m *MockManagerProvisioner) CallCounts() (provision, deprovision, refreshMa
 		len(m.Calls.DeactivateMatrixUser)
 }
 
+// ServiceAccountCallCounts returns EnsureManagerServiceAccount and DeleteManagerServiceAccount counts.
+func (m *MockManagerProvisioner) ServiceAccountCallCounts() (ensure, delete int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Calls.EnsureManagerServiceAccount), len(m.Calls.DeleteManagerServiceAccount)
+}
+
+// MCPAuthCallCount returns the number of ReconcileMCPAuth calls.
+func (m *MockManagerProvisioner) MCPAuthCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Calls.ReconcileMCPAuth)
+}
+
+// CredentialCallCounts returns DeleteCredentials and RequestManagerSAToken counts.
+func (m *MockManagerProvisioner) CredentialCallCounts() (deleteCredentials, requestSAToken int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Calls.DeleteCredentials), len(m.Calls.RequestManagerSAToken)
+}
+
 var _ service.ManagerProvisioner = (*MockManagerProvisioner)(nil)

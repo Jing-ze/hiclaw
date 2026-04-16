@@ -431,6 +431,448 @@ func TestManagerUpdate_NoInfiniteRecreate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Manager Sleeping lifecycle test
+// ---------------------------------------------------------------------------
+
+func TestManagerStateChange_SleepAndWake(t *testing.T) {
+	resetManagerMocks()
+
+	mgrName := fixtures.UniqueName("test-mgr-sleep")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	waitForManagerRunning(t, mgr)
+
+	// --- Running -> Sleeping ---
+	mockMgrBackend.ClearCalls()
+
+	updateManagerSpecField(t, mgr, func(m *v1beta1.Manager) {
+		m.Spec.State = ptrString("Sleeping")
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Phase != "Sleeping" {
+			return fmt.Errorf("phase=%q, want Sleeping", m.Status.Phase)
+		}
+		return nil
+	})
+
+	_, _, _, stops, _ := mockMgrBackend.CallSnapshot()
+	if len(stops) == 0 {
+		t.Error("backend.Stop should have been called when transitioning to Sleeping")
+	}
+
+	// --- Sleeping -> Running ---
+	mockMgrBackend.ClearCalls()
+
+	updateManagerSpecField(t, mgr, func(m *v1beta1.Manager) {
+		m.Spec.State = nil
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Phase != "Running" {
+			return fmt.Errorf("phase=%q, want Running", m.Status.Phase)
+		}
+		return nil
+	})
+
+	creates, _, _, _, _ := mockMgrBackend.CallSnapshot()
+	if len(creates) == 0 {
+		t.Error("backend.Create should have been called when waking from Sleeping")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manager Pod deleted recreates test
+// ---------------------------------------------------------------------------
+
+func TestManagerPodDeleted_Recreates(t *testing.T) {
+	resetManagerMocks()
+
+	// Use StatusFn to simulate container presence. Manager's containerName
+	// differs from req.Name (managerContainerName mapping), so the mock's
+	// automatic state tracking doesn't work for Manager. We use StatusFn to
+	// control the simulation explicitly.
+	mockMgrBackend.StatusFn = func(_ context.Context, _ string) (*backend.WorkerResult, error) {
+		return &backend.WorkerResult{Status: backend.StatusRunning}, nil
+	}
+
+	mgrName := fixtures.UniqueName("test-mgr-poddel")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		mockMgrBackend.StatusFn = nil
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	waitForManagerRunning(t, mgr)
+
+	// Simulate external pod deletion: switch Status to NotFound
+	mockMgrBackend.ClearCalls()
+	mockMgrBackend.StatusFn = func(_ context.Context, _ string) (*backend.WorkerResult, error) {
+		return &backend.WorkerResult{Status: backend.StatusNotFound}, nil
+	}
+
+	triggerManagerReconcile(t, mgr)
+
+	assertEventually(t, func() error {
+		creates, _, _, _, _ := mockMgrBackend.CallSnapshot()
+		if len(creates) == 0 {
+			return fmt.Errorf("waiting for backend.Create to be called (pod recreation)")
+		}
+		return nil
+	})
+
+	var m v1beta1.Manager
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+		t.Fatalf("failed to get Manager: %v", err)
+	}
+	if m.Status.Phase != "Running" {
+		t.Errorf("phase=%q after pod recreation, want Running", m.Status.Phase)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manager simultaneous spec + state change test
+// ---------------------------------------------------------------------------
+
+func TestManagerStateChange_SimultaneousSpecAndState(t *testing.T) {
+	resetManagerMocks()
+
+	mgrName := fixtures.UniqueName("test-mgr-simul")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	waitForManagerRunning(t, mgr)
+
+	// --- Simultaneously change state to Stopped AND model ---
+	mockMgrBackend.ClearCalls()
+
+	updateManagerSpecField(t, mgr, func(m *v1beta1.Manager) {
+		m.Spec.State = ptrString("Stopped")
+		m.Spec.Model = "claude-sonnet-4-20250514"
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Phase != "Stopped" {
+			return fmt.Errorf("phase=%q, want Stopped", m.Status.Phase)
+		}
+		return nil
+	})
+
+	creates, _, _, _, _ := mockMgrBackend.CallSnapshot()
+	if len(creates) > 0 {
+		t.Errorf("backend.Create called %d times while Stopped -- should not create in Stopped state", len(creates))
+	}
+
+	// --- Resume to Running with new config ---
+	mockMgrBackend.ClearCalls()
+
+	updateManagerSpecField(t, mgr, func(m *v1beta1.Manager) {
+		m.Spec.State = nil
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Phase != "Running" {
+			return fmt.Errorf("phase=%q, want Running", m.Status.Phase)
+		}
+		return nil
+	})
+
+	creates, _, _, _, _ = mockMgrBackend.CallSnapshot()
+	if len(creates) == 0 {
+		t.Error("backend.Create should have been called when resuming with new config")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manager error path tests
+// ---------------------------------------------------------------------------
+
+func TestManagerCreate_ConfigDeployFailure_KeepsPhase(t *testing.T) {
+	resetManagerMocks()
+
+	mockMgrDeploy.DeployManagerConfigFn = func(_ context.Context, _ service.ManagerDeployRequest) error {
+		return fmt.Errorf("simulated config deploy failure")
+	}
+
+	mgrName := fixtures.UniqueName("test-mgr-cfgfail")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Message == "" {
+			return fmt.Errorf("message should contain failure reason")
+		}
+		return nil
+	})
+
+	var m v1beta1.Manager
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+		t.Fatalf("failed to get Manager: %v", err)
+	}
+
+	if m.Status.MatrixUserID == "" {
+		t.Error("MatrixUserID should be set (provision succeeded before config failure)")
+	}
+	// computeManagerPhase: MatrixUserID != "" + err → keeps original Phase (empty on first create)
+	// Phase should NOT be "Failed" because infrastructure was provisioned
+	if m.Status.Phase == "Failed" {
+		t.Error("Phase should not be Failed when infrastructure was successfully provisioned")
+	}
+	if m.Status.ObservedGeneration != 0 {
+		t.Errorf("ObservedGeneration=%d, want 0 (should not be written on error)", m.Status.ObservedGeneration)
+	}
+}
+
+func TestManagerCreate_ContainerCreateFailure_ReturnsError(t *testing.T) {
+	resetManagerMocks()
+
+	mockMgrBackend.CreateFn = func(_ context.Context, _ backend.CreateRequest) (*backend.WorkerResult, error) {
+		return nil, fmt.Errorf("simulated container create failure")
+	}
+
+	mgrName := fixtures.UniqueName("test-mgr-ctrfail")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Message == "" {
+			return fmt.Errorf("message should contain failure reason")
+		}
+		return nil
+	})
+
+	var m v1beta1.Manager
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+		t.Fatalf("failed to get Manager: %v", err)
+	}
+
+	if m.Status.MatrixUserID == "" {
+		t.Error("MatrixUserID should be set (infra+config succeeded before container failure)")
+	}
+	if m.Status.Phase == "Running" {
+		t.Error("Phase should not be Running when container creation failed")
+	}
+}
+
+func TestManagerCreate_ServiceAccountFailure_SelfHeals(t *testing.T) {
+	// SA creation failure during initial provisioning doesn't permanently
+	// block the Manager. After the first reconcile writes MatrixUserID to
+	// status, subsequent reconciles take the refresh path, bypassing SA
+	// creation entirely. The Manager reaches Running despite the SA never
+	// being successfully created.
+	//
+	// Known Issue: SA is never retried after recovery. If the SA is
+	// actually required for operation, the Manager runs without it.
+	resetManagerMocks()
+
+	mockMgrProv.EnsureManagerServiceAccountFn = func(_ context.Context, _ string) error {
+		return fmt.Errorf("simulated SA creation failure")
+	}
+
+	mgrName := fixtures.UniqueName("test-mgr-safail")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	// Manager self-heals: first reconcile fails at SA but writes
+	// MatrixUserID; second reconcile takes refresh path and succeeds.
+	waitForManagerRunning(t, mgr)
+
+	provCount, _, _, _ := mockMgrProv.CallCounts()
+	if provCount == 0 {
+		t.Error("ProvisionManager should have been called")
+	}
+	ensureSA, _ := mockMgrProv.ServiceAccountCallCounts()
+	if ensureSA == 0 {
+		t.Error("EnsureManagerServiceAccount should have been attempted at least once")
+	}
+}
+
+func TestManagerUpdate_RefreshCredentialsFail_KeepsPhase(t *testing.T) {
+	resetManagerMocks()
+
+	mgrName := fixtures.UniqueName("test-mgr-reffail")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	waitForManagerRunning(t, mgr)
+
+	// Switch RefreshManagerCredentials to fail
+	mockMgrProv.RefreshManagerCredentialsFn = func(_ context.Context, _ string) (*service.RefreshResult, error) {
+		return nil, fmt.Errorf("simulated refresh failure")
+	}
+
+	triggerManagerReconcile(t, mgr)
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.Message == "" {
+			return fmt.Errorf("message should contain refresh failure")
+		}
+		return nil
+	})
+
+	var m v1beta1.Manager
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+		t.Fatalf("failed to get Manager: %v", err)
+	}
+
+	if m.Status.Phase != "Running" {
+		t.Errorf("Phase=%q, want Running (should keep original phase on refresh failure)", m.Status.Phase)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manager delete resilience test
+// ---------------------------------------------------------------------------
+
+func TestManagerDelete_PartialFailure_StillCompletes(t *testing.T) {
+	resetManagerMocks()
+
+	mgrName := fixtures.UniqueName("test-mgr-delprt")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+
+	waitForManagerRunning(t, mgr)
+
+	// Make cleanup operations fail
+	mockMgrProv.DeprovisionManagerFn = func(_ context.Context, _ string, _ []string) error {
+		return fmt.Errorf("simulated deprovision failure")
+	}
+	mockMgrDeploy.CleanupOSSDataFn = func(_ context.Context, _ string) error {
+		return fmt.Errorf("simulated OSS cleanup failure")
+	}
+	mockMgrProv.DeleteCredentialsFn = func(_ context.Context, _ string) error {
+		return fmt.Errorf("simulated credential delete failure")
+	}
+
+	if err := k8sClient.Delete(ctx, mgr); err != nil {
+		t.Fatalf("failed to delete Manager CR: %v", err)
+	}
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m)
+		if err == nil {
+			return fmt.Errorf("manager still exists (phase=%q)", m.Status.Phase)
+		}
+		return client.IgnoreNotFound(err)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Manager MCP reauthorization test
+// ---------------------------------------------------------------------------
+
+func TestManagerUpdate_MCPServersChange_TriggersReauth(t *testing.T) {
+	resetManagerMocks()
+
+	mgrName := fixtures.UniqueName("test-mgr-mcp")
+	mgr := fixtures.NewTestManagerWithMCPServers(mgrName, []string{"mcp-server-1"})
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("failed to create Manager CR: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, mgr)
+	})
+
+	waitForManagerRunning(t, mgr)
+
+	mockMgrProv.ClearCalls()
+
+	updateManagerSpecField(t, mgr, func(m *v1beta1.Manager) {
+		m.Spec.McpServers = []string{"mcp-server-1", "mcp-server-2"}
+	})
+
+	assertEventually(t, func() error {
+		var m v1beta1.Manager
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
+			return err
+		}
+		if m.Status.ObservedGeneration != m.Generation {
+			return fmt.Errorf("ObservedGeneration=%d, want %d", m.Status.ObservedGeneration, m.Generation)
+		}
+		return nil
+	})
+
+	mcpCount := mockMgrProv.MCPAuthCallCount()
+	if mcpCount == 0 {
+		t.Error("ReconcileMCPAuth should have been called after McpServers change")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Manager test helpers
 // ---------------------------------------------------------------------------
 
