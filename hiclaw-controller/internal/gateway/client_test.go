@@ -273,3 +273,148 @@ func TestEnsureConsumer_EmbeddedFallbackConvergesPassword(t *testing.T) {
 		t.Fatalf("unexpected login password sequence: %v", loginPasswords)
 	}
 }
+
+// TestAuthorizeAIRoutes_PUTFailsPropagatesError asserts that a non-2xx, non-409
+// PUT response is surfaced as an error instead of being swallowed. Prior to
+// the fix, PUT failures were silently broken by `break`-ing the retry loop
+// and returning nil, which left the data plane stuck after controller
+// restarts.
+func TestAuthorizeAIRoutes_PUTFailsPropagatesError(t *testing.T) {
+	client := newGatewayTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/system/init":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/session/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "test"})
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v1/ai/routes" && r.Method == "GET":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"name": "route-1"}},
+			})
+		case r.URL.Path == "/v1/ai/routes/route-1" && r.Method == "GET":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"name": "route-1",
+					"authConfig": map[string]interface{}{
+						"allowedConsumers": []string{},
+					},
+				},
+			})
+		case r.URL.Path == "/v1/ai/routes/route-1" && r.Method == "PUT":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+
+	c := NewHigressClient(Config{ConsoleURL: "http://higress.test"}, client)
+	err := c.AuthorizeAIRoutes(context.Background(), "worker-alice")
+	if err == nil {
+		t.Fatal("AuthorizeAIRoutes: expected error on PUT 500, got nil")
+	}
+}
+
+// TestEnsureAIRoute_ExistingSkipsPOST asserts EnsureAIRoute never writes to
+// /v1/ai/routes when the route already exists with a matching skeleton. This
+// is the cornerstone of the ownership split: the Initializer must not touch
+// authConfig.allowedConsumers on restart.
+func TestEnsureAIRoute_ExistingSkipsPOST(t *testing.T) {
+	var sawPost, sawPut bool
+	client := newGatewayTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/system/init":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/session/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "test"})
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v1/ai/routes/default-ai-route" && r.Method == "GET":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"name": "default-ai-route",
+					"pathPredicate": map[string]interface{}{
+						"matchType":     "PRE",
+						"matchValue":    "/v1",
+						"caseSensitive": false,
+					},
+					"upstreams": []map[string]interface{}{
+						{"provider": "qwen"},
+					},
+					"authConfig": map[string]interface{}{
+						"enabled":                true,
+						"allowedCredentialTypes": []string{"key-auth"},
+						"allowedConsumers":       []string{"manager", "worker-alice"},
+					},
+				},
+			})
+		case r.URL.Path == "/v1/ai/routes" && r.Method == "POST":
+			sawPost = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v1/ai/routes/default-ai-route" && r.Method == "PUT":
+			sawPut = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+
+	c := NewHigressClient(Config{ConsoleURL: "http://higress.test"}, client)
+	if err := c.EnsureAIRoute(context.Background(), AIRouteRequest{
+		Name:       "default-ai-route",
+		PathPrefix: "/v1",
+		Provider:   "qwen",
+	}); err != nil {
+		t.Fatalf("EnsureAIRoute: %v", err)
+	}
+	if sawPost {
+		t.Error("EnsureAIRoute must not POST when route already exists")
+	}
+	if sawPut {
+		t.Error("EnsureAIRoute must not PUT when route already exists")
+	}
+}
+
+// TestEnsureAIRoute_MissingCreatesSkeletonWithoutAllowedConsumers asserts
+// that when the route is absent, the POST body enables the key-auth framework
+// but omits allowedConsumers entirely, so Higress defaults it to [] and
+// ownership of the field stays with the reconcilers.
+func TestEnsureAIRoute_MissingCreatesSkeletonWithoutAllowedConsumers(t *testing.T) {
+	var gotPostBody map[string]interface{}
+	client := newGatewayTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/system/init":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/session/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "test"})
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v1/ai/routes/default-ai-route" && r.Method == "GET":
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/v1/ai/routes" && r.Method == "POST":
+			_ = json.NewDecoder(r.Body).Decode(&gotPostBody)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+
+	c := NewHigressClient(Config{ConsoleURL: "http://higress.test"}, client)
+	if err := c.EnsureAIRoute(context.Background(), AIRouteRequest{
+		Name:       "default-ai-route",
+		PathPrefix: "/v1",
+		Provider:   "qwen",
+	}); err != nil {
+		t.Fatalf("EnsureAIRoute: %v", err)
+	}
+	if gotPostBody == nil {
+		t.Fatal("expected POST to /v1/ai/routes when route is missing")
+	}
+	authConfig, ok := gotPostBody["authConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("POST body missing authConfig: %v", gotPostBody)
+	}
+	if enabled, _ := authConfig["enabled"].(bool); !enabled {
+		t.Errorf("authConfig.enabled must be true; got %v", authConfig["enabled"])
+	}
+	if _, present := authConfig["allowedConsumers"]; present {
+		t.Errorf("authConfig.allowedConsumers must NOT be set on skeleton creation; got %v", authConfig["allowedConsumers"])
+	}
+}
