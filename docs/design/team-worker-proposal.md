@@ -1,5 +1,7 @@
 # HiClaw Team 架构设计文档
 
+> **⚠️ SUPERSEDED**: 本文档描述的 Team 设计（Team 内嵌 Worker spec 并由 Team reconciler 生成 Worker CR）已被 [`team-refactor-plan.md`](./team-refactor-plan.md) 替代。新设计中 Team 作为纯协调 CR，Worker 作为独立 CR 通过 `spec.teamRef` 加入团队。本文档保留为历史参考。
+
 ## 1. 背景与目标
 
 ### 1.1 现状分析
