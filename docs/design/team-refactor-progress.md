@@ -94,11 +94,12 @@
 
 ## Stage 6: WorkerReconciler 增量扩展
 
-- [ ] **36. Update worker_controller.go** (Watches Team+Human, insert new phases, label sync)
-- [ ] **37. Create worker_reconcile_team.go** (reconcileTeamMembership)
-- [ ] **38. Create worker_reconcile_leader_broadcast.go** (reconcileLeaderBroadcast)
-- [ ] **39. Update worker_reconcile_config.go** (consume scope.effectivePolicy)
-- [ ] **40. Update worker_scope.go** (add team-related fields)
+- [x] **36. Update worker_controller.go** (Watches Team via teamToWorkersMapper+teamToWorkersPredicates; Watches Human via humanToWorkersMapper+humanToWorkersPredicates; syncWorkerLabels keeps hiclaw.io/team + hiclaw.io/role in spec; phase sequence: infra → teamMembership → SA → config → leaderBroadcast → container; reconcileLegacy updated to use spec.Role + spec.TeamRef and to only push Manager.groupAllowFrom for standalone/team_leader; removed old annotation-based logic)
+- [x] **37. Create worker_reconcile_team.go** (reconcileTeamMembership: standalone early-return with TeamRefResolved=True; Team NotFound → TeamRefResolved=False degraded-run; resolved → populate scope teamName/teamLeaderName/teamLeaderMatrixID/teamRoomID/teamLeaderDMRoomID/teamMemberNames/teamMemberMatrixIDs/teamAdminMatrixIDs/peerMentionsEnabled + buildEffectivePolicy with role-specific automatic additions; migration detection via status.TeamRef diff)
+- [x] **38. Create worker_reconcile_leader_broadcast.go** (reconcileLeaderBroadcast: role=team_leader + teamFound + rooms ready guards; Deployer.WriteLeaderCoordinationContext with heartbeat/workerIdleTimeout from Team.spec; non-fatal error handling)
+- [x] **39. Update worker_reconcile_config.go** (consume scope.effectivePolicy instead of w.Spec.ChannelPolicy; pass scope.teamName/teamLeaderName/teamAdminMatrixIDs[0] derived from observation; removed annotation reads)
+- [x] **40. Update worker_scope.go** (teamFound, teamName, teamLeaderName, teamLeaderMatrixID, teamLeaderDMRoomID, teamRoomID, teamMemberNames, teamMemberMatrixIDs, teamAdminMatrixIDs, peerMentionsEnabled, effectivePolicy fields)
+- [x] **40.5 (supporting)**: Updated worker_reconcile_infra.go (use spec.Role/TeamRef + resolveTeamLeaderName helper for Room power-levels; added Provisioned condition); updated worker_reconcile_delete.go (use spec.Role to determine isTeamMember; Manager.groupAllowFrom removal only for standalone/team_leader); removed obsolete roleForAnnotations helper
 
 ---
 
@@ -195,7 +196,9 @@
 
 [2026-04-17_Batch-4] - executor - Stage 3 完成 (Items 14-18): 新建 internal/webhook 包; validators.go (共享 helpers: validateDNSLabel/validateDuration/validateStringEnum/aggregateErrors); worker_validator.go (WorkerValidator: role/teamRef 一致性 + runtime enum + state enum + DNS-1123 + leader 唯一性 peer check 通过 label selector); team_validator.go (heartbeat/workerIdleTimeout duration + DNS-1123); human_validator.go (superAdmin 排斥 teamAccess/workerAccess + teamAccess role enum + team 唯一性 + 必填校验); webhook.go (Validators 聚合结构 + RegisterWithManager 用于 incluster 模式 ValidatingWebhook); 3 份 table-driven 测试共 30 个 case 全部通过 - SUCCESSFUL - committed as a0b898a
 
-[2026-04-17_Batch-6] - executor - Stage 5 完成 (Items 29-35): HumanReconciler 从老式 switch Phase 模式重写为 phase-based declarative; human_controller.go (Reconcile + defer-patch + SetupWithManager with Watches(Team, teamToHumansMapper+teamRoomsChangedPredicates) + Watches(Worker, workerToHumansMapper+workerRoomChangedPredicates); mappers list Humans in namespace and filter to those with SuperAdmin/teamAccess/workerAccess relevant to the event); human_scope.go (matrixAccessToken/desiredRooms); human_phase.go (computeHumanPhase: Active/Pending/Failed); human_reconcile_infra.go (EnsureUser with Password=status.InitialPassword seed for idempotent re-login); human_reconcile_rooms.go (computeDesiredRooms: workerAccess → Worker rooms, superAdmin → all Team/Worker rooms, teamAccess → Team Room + admin→LeaderDMRoom + member Worker rooms + leader Worker room for admin; diff with status.Rooms, JoinRoom/LeaveRoom best-effort); human_reconcile_legacy.go (humans-registry with synthesised PermissionLevel + AccessibleTeams for Manager-skill compat); human_reconcile_delete.go (DeactivateUser + registry remove + finalizer) - UNCONFIRMED - internal/controller 包完整编译 + go vet 通过; 既有 service/matrix/webhook 测试全部通过; 剩余破损仅限 server (Stage 10) 和 mocks (Stage 9)
+[2026-04-17_Batch-7] - executor - Stage 6 完成 (Items 36-40): WorkerReconciler 从 annotation 驱动升级为 spec 驱动并扩展 2 个新 phase; worker_scope.go 新增 teamFound/teamName/teamLeaderName/teamLeaderMatrixID/teamLeaderDMRoomID/teamRoomID/teamMemberNames/teamMemberMatrixIDs/teamAdminMatrixIDs/peerMentionsEnabled/effectivePolicy 字段; worker_reconcile_team.go 新增 reconcileTeamMembership phase (Get Team → populate scope + buildEffectivePolicy with role-specific automatic additions); worker_reconcile_leader_broadcast.go 新增 reconcileLeaderBroadcast phase (仅 team_leader 触发 WriteLeaderCoordinationContext); worker_reconcile_config.go 消费 scope.effectivePolicy 替代 w.Spec.ChannelPolicy, 移除 annotation 读取; worker_reconcile_infra.go 使用 spec.Role/TeamRef + resolveTeamLeaderName helper; worker_reconcile_delete.go 使用 spec.Role 判断 isTeamMember; worker_controller.go syncWorkerLabels 开头同步 hiclaw.io/team + hiclaw.io/role label 镜像 spec, 主 reconcileNormal 插入 reconcileTeamMembership/reconcileLeaderBroadcast 两个 phase, SetupWithManager 新增 Watches(Team) 和 Watches(Human) 配合 mapper+predicate, reconcileLegacy 只对 standalone+team_leader 更新 Manager.groupAllowFrom; 移除 roleForAnnotations 废弃 helper - UNCONFIRMED - internal/controller 完整编译 + go vet 通过; 既有 service/matrix/webhook 测试继续全部通过; 剩余破损仅限 server (Stage 10) 和 mocks (Stage 9)
+
+[2026-04-17_Batch-6] - executor - Stage 5 完成 (Items 29-35): HumanReconciler 从老式 switch Phase 模式重写为 phase-based declarative - SUCCESSFUL - committed as 83881f3 human_controller.go (Reconcile + defer-patch + SetupWithManager with Watches(Team, teamToHumansMapper+teamRoomsChangedPredicates) + Watches(Worker, workerToHumansMapper+workerRoomChangedPredicates); mappers list Humans in namespace and filter to those with SuperAdmin/teamAccess/workerAccess relevant to the event); human_scope.go (matrixAccessToken/desiredRooms); human_phase.go (computeHumanPhase: Active/Pending/Failed); human_reconcile_infra.go (EnsureUser with Password=status.InitialPassword seed for idempotent re-login); human_reconcile_rooms.go (computeDesiredRooms: workerAccess → Worker rooms, superAdmin → all Team/Worker rooms, teamAccess → Team Room + admin→LeaderDMRoom + member Worker rooms + leader Worker room for admin; diff with status.Rooms, JoinRoom/LeaveRoom best-effort); human_reconcile_legacy.go (humans-registry with synthesised PermissionLevel + AccessibleTeams for Manager-skill compat); human_reconcile_delete.go (DeactivateUser + registry remove + finalizer) - UNCONFIRMED - internal/controller 包完整编译 + go vet 通过; 既有 service/matrix/webhook 测试全部通过; 剩余破损仅限 server (Stage 10) 和 mocks (Stage 9)
 
 [2026-04-17_Batch-5] - executor - Stage 4 完成 (Items 19-28): TeamReconciler 从 582 行旧单文件完全重写为 9 个 phase-based declarative 文件 - SUCCESSFUL - committed as 8525645
 
@@ -217,7 +220,7 @@
 - Stage 3 (Webhook)：5 / 5
 - Stage 4 (Team Reconciler)：10 / 10
 - Stage 5 (Human Reconciler)：7 / 7
-- Stage 6 (Worker Reconciler)：0 / 5
+- Stage 6 (Worker Reconciler)：5 / 5
 - Stage 7 (Manager Reconciler)：0 / 4
 - Stage 8 (Webhook Wiring)：0 / 3
 - Stage 9 (Mocks/Fixtures)：0 / 7
@@ -226,4 +229,4 @@
 - Stage 12 (Integration Tests)：0 / 5
 - Stage 13 (Docs & Validation)：0 / 11
 
-**Total: 35 / 80**
+**Total: 40 / 80**

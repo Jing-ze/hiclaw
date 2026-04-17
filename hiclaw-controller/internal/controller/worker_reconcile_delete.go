@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 
+	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
 	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -15,7 +16,8 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, s *workerScope) 
 	logger.Info("deleting worker", "name", w.Name)
 
 	workerName := w.Name
-	isTeamWorker := w.Annotations["hiclaw.io/team-leader"] != ""
+	role := w.Spec.EffectiveRole()
+	isTeamMember := role == v1beta1.WorkerRoleTeamLeader || role == v1beta1.WorkerRoleTeamWorker
 
 	if err := r.Provisioner.DeactivateMatrixUser(ctx, workerName); err != nil {
 		logger.Error(err, "matrix user deactivation failed (non-fatal)")
@@ -23,7 +25,7 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, s *workerScope) 
 
 	if err := r.Provisioner.DeprovisionWorker(ctx, service.WorkerDeprovisionRequest{
 		Name:         workerName,
-		IsTeamWorker: isTeamWorker,
+		IsTeamWorker: isTeamMember,
 		McpServers:   w.Spec.McpServers,
 		ExposedPorts: w.Status.ExposedPorts,
 		ExposeSpec:   w.Spec.Expose,
@@ -40,8 +42,11 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, s *workerScope) 
 	}
 
 	if r.Legacy != nil && r.Legacy.Enabled() {
-		workerMatrixID := r.Provisioner.MatrixUserID(workerName)
-		if !isTeamWorker {
+		// When the worker was a direct Manager peer (standalone or team
+		// leader), remove it from Manager.groupAllowFrom so the Manager
+		// agent config reflects current membership.
+		if !isTeamMember || role == v1beta1.WorkerRoleTeamLeader {
+			workerMatrixID := r.Provisioner.MatrixUserID(workerName)
 			if err := r.Legacy.UpdateManagerGroupAllowFrom(workerMatrixID, false); err != nil {
 				logger.Error(err, "failed to update Manager groupAllowFrom (non-fatal)")
 			}
