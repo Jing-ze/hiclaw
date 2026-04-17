@@ -172,6 +172,20 @@ func workerTeamRefPredicates() predicate.Predicate {
 			if oldW.Spec.TeamRef != newW.Spec.TeamRef {
 				return true
 			}
+			// Label updates are the ONLY signal Observer has to detect
+			// membership changes after a teamRef migration — the label
+			// selector is evaluated against the current (post-sync)
+			// label, not against spec.teamRef. Without this pass-through,
+			// the new team would observe an empty member list until the
+			// periodic 5-minute requeue catches up. Applies to both
+			// hiclaw.io/team and hiclaw.io/role, which combined drive
+			// the Observer's leader/member classification.
+			if oldW.Labels[v1beta1.LabelTeam] != newW.Labels[v1beta1.LabelTeam] {
+				return true
+			}
+			if oldW.Labels[v1beta1.LabelRole] != newW.Labels[v1beta1.LabelRole] {
+				return true
+			}
 			if newW.Spec.TeamRef == "" {
 				return false
 			}

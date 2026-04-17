@@ -12,6 +12,7 @@ import (
 	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"github.com/hiclaw/hiclaw-controller/test/testutil/fixtures"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -629,6 +630,293 @@ func TestWorkerDelete_ProvisionFailed_StillCleans(t *testing.T) {
 	if cleanupCount2 == 0 {
 		t.Error("CleanupOSSData should have been called even for a failed worker")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Stage 12 extensions: team-related Worker behaviours.
+// ---------------------------------------------------------------------------
+
+// TestWorker_InvalidTeamRef_TeamRefResolvedFalse verifies that a Worker
+// pointing at a non-existent Team still provisions its own infrastructure
+// and surfaces the TeamRefResolved=False/TeamNotFound condition. The
+// teamRef label is synced even when the Team is missing.
+func TestWorker_InvalidTeamRef_TeamRefResolvedFalse(t *testing.T) {
+	resetAllMocks()
+
+	workerName := fixtures.UniqueName("w-ghost")
+	ghostTeam := "ghost-team-" + fixtures.UniqueName("t")
+
+	worker := fixtures.NewTestWorker(workerName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamWorker),
+		fixtures.WithTeamRef(ghostTeam))
+	if err := k8sClient.Create(ctx, worker); err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, worker) })
+
+	waitForRunning(t, worker)
+
+	var got v1beta1.Worker
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &got); err != nil {
+		t.Fatalf("get worker: %v", err)
+	}
+	if got.Labels[v1beta1.LabelTeam] != ghostTeam {
+		t.Errorf("Labels[team]=%q, want %q", got.Labels[v1beta1.LabelTeam], ghostTeam)
+	}
+	if got.Labels[v1beta1.LabelRole] != v1beta1.WorkerRoleTeamWorker {
+		t.Errorf("Labels[role]=%q, want %q", got.Labels[v1beta1.LabelRole], v1beta1.WorkerRoleTeamWorker)
+	}
+	if !hasCondition(got.Status.Conditions, v1beta1.ConditionTeamRefResolved, metav1.ConditionFalse, "TeamNotFound") {
+		t.Errorf("expected TeamRefResolved=False/TeamNotFound, got: %+v", got.Status.Conditions)
+	}
+}
+
+// TestWorker_RoleTransition_StandaloneToTeamWorker verifies that changing
+// a Worker's role from standalone to team_worker keeps the Matrix
+// identity (ProvisionWorker not invoked again) and updates labels.
+func TestWorker_RoleTransition_StandaloneToTeamWorker(t *testing.T) {
+	resetAllMocks()
+
+	workerName := fixtures.UniqueName("w-role-up")
+	teamName := fixtures.UniqueName("w-role-team")
+	leaderName := teamName + "-lead"
+
+	// Pre-create the target team + leader so teamRef will resolve.
+	team := fixtures.NewTestTeam(teamName)
+	leader := fixtures.NewTestWorker(leaderName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamLeader),
+		fixtures.WithTeamRef(teamName))
+	for _, obj := range []client.Object{team, leader} {
+		if err := k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %T: %v", obj, err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, team)
+		_ = k8sClient.Delete(ctx, leader)
+	})
+	waitForRunning(t, leader)
+	waitForTeamPhase(t, team, "Active")
+
+	// Start the worker as standalone.
+	worker := fixtures.NewTestWorker(workerName)
+	if err := k8sClient.Create(ctx, worker); err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, worker) })
+	waitForRunning(t, worker)
+
+	provBefore, _, _, _ := mockProv.CallCounts()
+
+	// Transition to team_worker.
+	updateSpecField(t, worker, func(w *v1beta1.Worker) {
+		w.Spec.Role = v1beta1.WorkerRoleTeamWorker
+		w.Spec.TeamRef = teamName
+	})
+
+	assertEventually(t, func() error {
+		var got v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &got); err != nil {
+			return err
+		}
+		if got.Status.TeamRef != teamName {
+			return fmt.Errorf("Status.TeamRef=%q, want %q", got.Status.TeamRef, teamName)
+		}
+		if got.Labels[v1beta1.LabelTeam] != teamName {
+			return fmt.Errorf("Labels[team]=%q, want %q", got.Labels[v1beta1.LabelTeam], teamName)
+		}
+		if got.Labels[v1beta1.LabelRole] != v1beta1.WorkerRoleTeamWorker {
+			return fmt.Errorf("Labels[role]=%q, want %q", got.Labels[v1beta1.LabelRole], v1beta1.WorkerRoleTeamWorker)
+		}
+		return nil
+	})
+
+	provAfter, _, _, _ := mockProv.CallCounts()
+	if provAfter != provBefore {
+		t.Errorf("ProvisionWorker delta=%d, want 0 (identity must be preserved on role transition)", provAfter-provBefore)
+	}
+}
+
+// TestWorker_RoleTransition_TeamWorkerToStandalone verifies the reverse
+// transition: clearing teamRef + role restores standalone behaviour and
+// removes the team label.
+func TestWorker_RoleTransition_TeamWorkerToStandalone(t *testing.T) {
+	resetAllMocks()
+
+	teamName := fixtures.UniqueName("w-role-down-team")
+	leaderName := teamName + "-lead"
+	workerName := fixtures.UniqueName("w-role-down")
+
+	team := fixtures.NewTestTeam(teamName)
+	leader := fixtures.NewTestWorker(leaderName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamLeader),
+		fixtures.WithTeamRef(teamName))
+	worker := fixtures.NewTestWorker(workerName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamWorker),
+		fixtures.WithTeamRef(teamName))
+	for _, obj := range []client.Object{team, leader, worker} {
+		if err := k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %T: %v", obj, err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, worker)
+		_ = k8sClient.Delete(ctx, leader)
+		_ = k8sClient.Delete(ctx, team)
+	})
+	waitForRunning(t, worker)
+	waitForRunning(t, leader)
+
+	provBefore, _, _, _ := mockProv.CallCounts()
+
+	// Clear role + teamRef (standalone).
+	updateSpecField(t, worker, func(w *v1beta1.Worker) {
+		w.Spec.Role = ""
+		w.Spec.TeamRef = ""
+	})
+
+	assertEventually(t, func() error {
+		var got v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &got); err != nil {
+			return err
+		}
+		if got.Status.TeamRef != "" {
+			return fmt.Errorf("Status.TeamRef=%q, want empty", got.Status.TeamRef)
+		}
+		if _, ok := got.Labels[v1beta1.LabelTeam]; ok {
+			return fmt.Errorf("Labels[team] still present: %q", got.Labels[v1beta1.LabelTeam])
+		}
+		if got.Labels[v1beta1.LabelRole] != v1beta1.WorkerRoleStandalone {
+			return fmt.Errorf("Labels[role]=%q, want %q", got.Labels[v1beta1.LabelRole], v1beta1.WorkerRoleStandalone)
+		}
+		if !hasCondition(got.Status.Conditions, v1beta1.ConditionTeamRefResolved, metav1.ConditionTrue, "Standalone") {
+			return fmt.Errorf("expected TeamRefResolved=True/Standalone, got: %+v", got.Status.Conditions)
+		}
+		return nil
+	})
+
+	provAfter, _, _, _ := mockProv.CallCounts()
+	if provAfter != provBefore {
+		t.Errorf("ProvisionWorker delta=%d, want 0 on role transition", provAfter-provBefore)
+	}
+}
+
+// TestWorker_LabelSync_MirrorsSpec verifies syncWorkerLabels keeps
+// hiclaw.io/team and hiclaw.io/role in lockstep with spec.TeamRef +
+// spec.Role across both creation and update.
+func TestWorker_LabelSync_MirrorsSpec(t *testing.T) {
+	resetAllMocks()
+
+	teamName := fixtures.UniqueName("w-lbl-team")
+	leaderName := fixtures.UniqueName("w-lbl")
+
+	// Pre-create a Team so the leader resolves and reconcile completes
+	// without retries stacking up.
+	team := fixtures.NewTestTeam(teamName)
+	if err := k8sClient.Create(ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, team) })
+
+	worker := fixtures.NewTestWorker(leaderName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamLeader),
+		fixtures.WithTeamRef(teamName))
+	if err := k8sClient.Create(ctx, worker); err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, worker) })
+	waitForRunning(t, worker)
+
+	assertEventually(t, func() error {
+		var got v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &got); err != nil {
+			return err
+		}
+		if got.Labels[v1beta1.LabelTeam] != teamName {
+			return fmt.Errorf("Labels[team]=%q, want %q", got.Labels[v1beta1.LabelTeam], teamName)
+		}
+		if got.Labels[v1beta1.LabelRole] != v1beta1.WorkerRoleTeamLeader {
+			return fmt.Errorf("Labels[role]=%q, want %q", got.Labels[v1beta1.LabelRole], v1beta1.WorkerRoleTeamLeader)
+		}
+		return nil
+	})
+
+	// Flip role to team_worker.
+	updateSpecField(t, worker, func(w *v1beta1.Worker) {
+		w.Spec.Role = v1beta1.WorkerRoleTeamWorker
+	})
+
+	assertEventually(t, func() error {
+		var got v1beta1.Worker
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &got); err != nil {
+			return err
+		}
+		if got.Labels[v1beta1.LabelRole] != v1beta1.WorkerRoleTeamWorker {
+			return fmt.Errorf("Labels[role]=%q, want %q", got.Labels[v1beta1.LabelRole], v1beta1.WorkerRoleTeamWorker)
+		}
+		if got.Labels[v1beta1.LabelTeam] != teamName {
+			return fmt.Errorf("Labels[team]=%q, want %q", got.Labels[v1beta1.LabelTeam], teamName)
+		}
+		return nil
+	})
+}
+
+// TestWorker_LeaderBroadcast_WritesCoordinationContext verifies that
+// WriteLeaderCoordinationContext is invoked for a team_leader worker
+// once the referenced Team has its rooms ready, with the expected
+// coordination payload.
+func TestWorker_LeaderBroadcast_WritesCoordinationContext(t *testing.T) {
+	resetAllMocks()
+
+	teamName := fixtures.UniqueName("w-lb-team")
+	leaderName := teamName + "-lead"
+
+	team := fixtures.NewTestTeam(teamName,
+		fixtures.WithHeartbeat(true, "30s"),
+		fixtures.WithWorkerIdleTimeout("10m"))
+	leader := fixtures.NewTestWorker(leaderName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamLeader),
+		fixtures.WithTeamRef(teamName))
+	for _, obj := range []client.Object{team, leader} {
+		if err := k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %T: %v", obj, err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, leader)
+		_ = k8sClient.Delete(ctx, team)
+	})
+	waitForRunning(t, leader)
+	waitForTeamPhase(t, team, "Active")
+
+	// Wait for leader broadcast call matching the expected coordination payload.
+	assertEventually(t, func() error {
+		calls := mockDeploy.Calls.WriteLeaderCoordinationContext
+		expectedTeamRoom := "!team-" + teamName + ":localhost"
+		expectedLeaderDM := "!leader-dm-" + teamName + ":localhost"
+		for _, c := range calls {
+			if c.LeaderName != leaderName {
+				continue
+			}
+			if c.TeamName != teamName {
+				continue
+			}
+			if c.TeamRoomID != expectedTeamRoom {
+				continue
+			}
+			if c.LeaderDMRoomID != expectedLeaderDM {
+				continue
+			}
+			if c.HeartbeatEvery != "30s" {
+				continue
+			}
+			if c.WorkerIdleTimeout != "10m" {
+				continue
+			}
+			return nil
+		}
+		return fmt.Errorf("no matching WriteLeaderCoordinationContext in %d calls", len(calls))
+	})
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import (
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
 	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/controller"
+	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"github.com/hiclaw/hiclaw-controller/test/testutil"
 	"github.com/hiclaw/hiclaw-controller/test/testutil/mocks"
 	"go.uber.org/zap/zapcore"
@@ -46,6 +47,11 @@ var (
 	mockMgrDeploy  *mocks.MockManagerDeployer
 	mockMgrBackend *mocks.MockWorkerBackend
 	mockMgrEnv     *mocks.MockManagerEnvBuilder
+
+	// Team / Human mocks introduced by the Stage-12 refactor.
+	mockMatrix       *mocks.MockMatrixClient
+	mockTeamObserver *mocks.MockTeamObserver
+	realObserver     *service.Observer
 )
 
 func TestMain(m *testing.M) {
@@ -122,6 +128,30 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to setup ManagerReconciler: %v", err))
 	}
 
+	// Wire up Team / Human reconcilers (Stage 12).
+	mockMatrix = mocks.NewMockMatrixClient()
+	mockTeamObserver = mocks.NewMockTeamObserver()
+	realObserver = service.NewObserver(service.ObserverConfig{Client: mgr.GetClient()})
+
+	teamReconciler := &controller.TeamReconciler{
+		Client:      mgr.GetClient(),
+		Provisioner: mockProv,
+		Observer:    realObserver,
+		Legacy:      nil,
+	}
+	if err := teamReconciler.SetupWithManager(mgr); err != nil {
+		panic(fmt.Sprintf("failed to setup TeamReconciler: %v", err))
+	}
+
+	humanReconciler := &controller.HumanReconciler{
+		Client: mgr.GetClient(),
+		Matrix: mockMatrix,
+		Legacy: nil,
+	}
+	if err := humanReconciler.SetupWithManager(mgr); err != nil {
+		panic(fmt.Sprintf("failed to setup HumanReconciler: %v", err))
+	}
+
 	go func() {
 		if err := mgr.Start(ctx); err != nil {
 			panic(fmt.Sprintf("failed to start manager: %v", err))
@@ -143,7 +173,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// resetMocks resets all mock call records and Fn overrides between tests.
+// resetMocks resets all Worker-scope mock call records and Fn overrides.
 func resetMocks() {
 	mockProv.Reset()
 	mockDeploy.Reset()
@@ -159,5 +189,203 @@ func resetManagerMocks() {
 	mockMgrEnv.Reset()
 }
 
+// resetTeamMocks clears mock call records related to Team reconciliation
+// (shared MockProvisioner's team-scope calls + matrix membership state).
+// It does NOT reset Worker-scope state, since Team tests typically
+// exercise Worker reconciler too.
+func resetTeamMocks() {
+	mockProv.ClearCalls()
+	mockMatrix.ClearCalls()
+	mockTeamObserver.Reset()
+}
+
+// resetHumanMocks clears only Human-reconciler-relevant mock state.
+func resetHumanMocks() {
+	mockMatrix.Reset()
+	mockProv.ClearCalls()
+	mockDeploy.ClearCalls()
+}
+
+// resetAllMocks fully resets every mock to its initial state. Use at the
+// top of tests that span Worker + Team + Human concerns.
+func resetAllMocks() {
+	resetMocks()
+	resetManagerMocks()
+	mockMatrix.Reset()
+	mockTeamObserver.Reset()
+}
+
 // suppress unused import for v1beta1
 var _ = v1beta1.GroupName
+
+// -----------------------------------------------------------------------------
+// Cross-CR wait helpers (shared by team_test.go / human_test.go / bundle_test.go)
+// -----------------------------------------------------------------------------
+
+// waitForTeamPhase polls until team.Status.Phase == phase or timeout.
+func waitForTeamPhase(t *testing.T, team *v1beta1.Team, phase string) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		if string(got.Status.Phase) != phase {
+			return fmt.Errorf("phase=%q message=%q, want %q", got.Status.Phase, got.Status.Message, phase)
+		}
+		return nil
+	})
+}
+
+// waitForTeamLeaderReady polls until Team.Status.Leader != nil && Ready.
+func waitForTeamLeaderReady(t *testing.T, team *v1beta1.Team) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		if got.Status.Leader == nil {
+			return fmt.Errorf("leader still nil")
+		}
+		if !got.Status.Leader.Ready {
+			return fmt.Errorf("leader %q not ready yet", got.Status.Leader.Name)
+		}
+		return nil
+	})
+}
+
+// waitForTeamMembers polls until Team.Status.Members has exactly count entries.
+func waitForTeamMembers(t *testing.T, team *v1beta1.Team, count int) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		if len(got.Status.Members) != count {
+			names := make([]string, 0, len(got.Status.Members))
+			for _, mbr := range got.Status.Members {
+				names = append(names, mbr.Name)
+			}
+			return fmt.Errorf("members=%d (%v), want %d", len(got.Status.Members), names, count)
+		}
+		return nil
+	})
+}
+
+// waitForTeamAdmins polls until Team.Status.Admins has exactly count entries.
+func waitForTeamAdmins(t *testing.T, team *v1beta1.Team, count int) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		if len(got.Status.Admins) != count {
+			return fmt.Errorf("admins=%d, want %d", len(got.Status.Admins), count)
+		}
+		return nil
+	})
+}
+
+// waitForHumanPhase polls until human.Status.Phase == phase or timeout.
+func waitForHumanPhase(t *testing.T, human *v1beta1.Human, phase string) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Human
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(human), &got); err != nil {
+			return err
+		}
+		if string(got.Status.Phase) != phase {
+			return fmt.Errorf("phase=%q, want %q", got.Status.Phase, phase)
+		}
+		return nil
+	})
+}
+
+// waitForHumanInRooms polls until the Human's status.Rooms contains every
+// expected roomID (superset match — the Human may be in additional rooms).
+func waitForHumanInRooms(t *testing.T, human *v1beta1.Human, roomIDs ...string) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Human
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(human), &got); err != nil {
+			return err
+		}
+		set := make(map[string]bool, len(got.Status.Rooms))
+		for _, r := range got.Status.Rooms {
+			set[r] = true
+		}
+		for _, want := range roomIDs {
+			if !set[want] {
+				return fmt.Errorf("room %q not in %v", want, got.Status.Rooms)
+			}
+		}
+		return nil
+	})
+}
+
+// waitForHumanNotInRoom polls until the Human's status.Rooms does NOT contain roomID.
+func waitForHumanNotInRoom(t *testing.T, human *v1beta1.Human, roomID string) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Human
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(human), &got); err != nil {
+			return err
+		}
+		for _, r := range got.Status.Rooms {
+			if r == roomID {
+				return fmt.Errorf("room %q still present in %v", roomID, got.Status.Rooms)
+			}
+		}
+		return nil
+	})
+}
+
+// updateTeamSpec performs a read-modify-write on a Team, retrying on conflict.
+func updateTeamSpec(t *testing.T, team *v1beta1.Team, mutate func(*v1beta1.Team)) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		mutate(&got)
+		return k8sClient.Update(ctx, &got)
+	})
+}
+
+// updateHumanSpec performs a read-modify-write on a Human, retrying on conflict.
+func updateHumanSpec(t *testing.T, human *v1beta1.Human, mutate func(*v1beta1.Human)) {
+	t.Helper()
+	assertEventually(t, func() error {
+		var got v1beta1.Human
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(human), &got); err != nil {
+			return err
+		}
+		mutate(&got)
+		return k8sClient.Update(ctx, &got)
+	})
+}
+
+// createAndWaitFinalizer creates obj and waits until the hiclaw.io/cleanup
+// finalizer is present, which implies the reconciler has observed the
+// object at least once.
+func createAndWaitFinalizer(t *testing.T, obj client.Object) {
+	t.Helper()
+	if err := k8sClient.Create(ctx, obj); err != nil {
+		t.Fatalf("create %T/%s: %v", obj, obj.GetName(), err)
+	}
+	assertEventually(t, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+			return err
+		}
+		for _, f := range obj.GetFinalizers() {
+			if f == "hiclaw.io/cleanup" {
+				return nil
+			}
+		}
+		return fmt.Errorf("finalizer not yet added")
+	})
+}

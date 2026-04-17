@@ -855,6 +855,142 @@ func TestManagerUpdate_MCPServersChange_TriggersReauth(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 12 extensions: Manager allowFrom reactivity.
+// ---------------------------------------------------------------------------
+
+// TestManager_AllowFromReactsToWorkerChanges verifies that the Manager
+// reconciler recomputes groupAllowFromExtra when Workers join / leave
+// the authoritative list (standalone + team_leader Workers with a
+// provisioned Matrix ID).
+func TestManager_AllowFromReactsToWorkerChanges(t *testing.T) {
+	resetAllMocks()
+
+	mgrName := fixtures.UniqueName("m-af-w")
+	standaloneName := fixtures.UniqueName("m-af-standalone")
+	teamName := fixtures.UniqueName("m-af-team")
+	leaderName := teamName + "-lead"
+
+	mgr := fixtures.NewTestManager(mgrName)
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, mgr) })
+	waitForManagerRunning(t, mgr)
+
+	// Baseline: Workers/Humans don't exist yet, so allowFromExtra should be empty.
+	mockMgrDeploy.ClearCalls()
+
+	// Create a standalone Worker + a team_leader Worker (in a Team).
+	standalone := fixtures.NewTestWorker(standaloneName)
+	team := fixtures.NewTestTeam(teamName)
+	leader := fixtures.NewTestWorker(leaderName,
+		fixtures.WithRole(v1beta1.WorkerRoleTeamLeader),
+		fixtures.WithTeamRef(teamName))
+	for _, obj := range []client.Object{standalone, team, leader} {
+		if err := k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("create %T: %v", obj, err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, standalone)
+		_ = k8sClient.Delete(ctx, leader)
+		_ = k8sClient.Delete(ctx, team)
+	})
+	waitForRunning(t, standalone)
+	waitForRunning(t, leader)
+
+	standaloneMatrix := "@" + standaloneName + ":localhost"
+	leaderMatrix := "@" + leaderName + ":localhost"
+
+	// Wait until some DeployManagerConfig call carries both IDs.
+	assertEventually(t, func() error {
+		calls := mockMgrDeploy.Calls.DeployManagerConfig
+		for i := len(calls) - 1; i >= 0; i-- {
+			if containsString(calls[i].GroupAllowFromExtra, standaloneMatrix) &&
+				containsString(calls[i].GroupAllowFromExtra, leaderMatrix) {
+				return nil
+			}
+		}
+		return fmt.Errorf("no DeployManagerConfig call with both %q and %q in GroupAllowFromExtra (calls=%d)",
+			standaloneMatrix, leaderMatrix, len(calls))
+	})
+
+	// Demote the leader to team_worker; it should drop out of allowFromExtra.
+	baseline := len(mockMgrDeploy.Calls.DeployManagerConfig)
+	updateSpecField(t, leader, func(w *v1beta1.Worker) {
+		w.Spec.Role = v1beta1.WorkerRoleTeamWorker
+	})
+
+	assertEventually(t, func() error {
+		calls := mockMgrDeploy.Calls.DeployManagerConfig
+		for i := len(calls) - 1; i >= baseline; i-- {
+			hasLeader := containsString(calls[i].GroupAllowFromExtra, leaderMatrix)
+			hasStandalone := containsString(calls[i].GroupAllowFromExtra, standaloneMatrix)
+			if !hasLeader && hasStandalone {
+				return nil
+			}
+		}
+		return fmt.Errorf("no post-demotion DeployManagerConfig call with leader removed (baseline=%d calls=%d)",
+			baseline, len(calls))
+	})
+}
+
+// TestManager_AllowFromReactsToHumanChanges verifies Manager allowFrom
+// picks up superAdmin Humans and drops them when the flag is cleared.
+func TestManager_AllowFromReactsToHumanChanges(t *testing.T) {
+	resetAllMocks()
+
+	mgrName := fixtures.UniqueName("m-af-h")
+	humanName := fixtures.UniqueName("m-af-super")
+
+	mgr := fixtures.NewTestManager(mgrName)
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, mgr) })
+	waitForManagerRunning(t, mgr)
+
+	mockMgrDeploy.ClearCalls()
+
+	human := fixtures.NewTestHuman(humanName, fixtures.WithSuperAdmin())
+	if err := k8sClient.Create(ctx, human); err != nil {
+		t.Fatalf("create human: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, human) })
+	waitForHumanPhase(t, human, "Active")
+
+	humanMatrix := "@" + humanName + ":localhost"
+
+	assertEventually(t, func() error {
+		calls := mockMgrDeploy.Calls.DeployManagerConfig
+		for i := len(calls) - 1; i >= 0; i-- {
+			if containsString(calls[i].GroupAllowFromExtra, humanMatrix) {
+				return nil
+			}
+		}
+		return fmt.Errorf("no DeployManagerConfig call with %q in GroupAllowFromExtra (calls=%d)",
+			humanMatrix, len(calls))
+	})
+
+	// Flip superAdmin off; Manager allowFromExtra should no longer include it.
+	baseline := len(mockMgrDeploy.Calls.DeployManagerConfig)
+	updateHumanSpec(t, human, func(h *v1beta1.Human) {
+		h.Spec.SuperAdmin = false
+	})
+
+	assertEventually(t, func() error {
+		calls := mockMgrDeploy.Calls.DeployManagerConfig
+		for i := len(calls) - 1; i >= baseline; i-- {
+			if !containsString(calls[i].GroupAllowFromExtra, humanMatrix) {
+				return nil
+			}
+		}
+		return fmt.Errorf("no post-flip DeployManagerConfig call without %q (baseline=%d calls=%d)",
+			humanMatrix, baseline, len(calls))
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Manager test helpers
 // ---------------------------------------------------------------------------
 
