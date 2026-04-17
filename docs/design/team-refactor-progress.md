@@ -82,13 +82,13 @@
 
 ## Stage 5: HumanReconciler 重写
 
-- [ ] **29. Delete old human_controller.go and rewrite**
-- [ ] **30. Create human_scope.go**
-- [ ] **31. Create human_phase.go**
-- [ ] **32. Create human_reconcile_infra.go**
-- [ ] **33. Create human_reconcile_rooms.go** (superAdmin + teamAccess + workerAccess → desired rooms)
-- [ ] **34. Create human_reconcile_legacy.go**
-- [ ] **35. Create human_reconcile_delete.go**
+- [x] **29. Delete old human_controller.go and rewrite** (phase-based declarative; patchBase + defer-patch + finalizer; Watches Team + Worker with status-change predicates and mappers listing Humans to fan out)
+- [x] **30. Create human_scope.go** (matrixAccessToken + desiredRooms fields)
+- [x] **31. Create human_phase.go** (computeHumanPhase: Active once MatrixUserID set, Pending otherwise, Failed on first-time infra error)
+- [x] **32. Create human_reconcile_infra.go** (EnsureUser; status.InitialPassword doubles as persisted seed for re-login)
+- [x] **33. Create human_reconcile_rooms.go** (resolves superAdmin / teamAccess admin|member / workerAccess into desired room set by reading Team.status.Members/Leader + Worker.status.RoomID; diff against current, JoinRoom/LeaveRoom best-effort)
+- [x] **34. Create human_reconcile_legacy.go** (humans-registry entry with synthesised PermissionLevel+AccessibleTeams for Manager-skill backwards compat; Stage 11 reshapes the registry)
+- [x] **35. Create human_reconcile_delete.go** (DeactivateUser + remove registry; finalizer release)
 
 ---
 
@@ -195,7 +195,9 @@
 
 [2026-04-17_Batch-4] - executor - Stage 3 完成 (Items 14-18): 新建 internal/webhook 包; validators.go (共享 helpers: validateDNSLabel/validateDuration/validateStringEnum/aggregateErrors); worker_validator.go (WorkerValidator: role/teamRef 一致性 + runtime enum + state enum + DNS-1123 + leader 唯一性 peer check 通过 label selector); team_validator.go (heartbeat/workerIdleTimeout duration + DNS-1123); human_validator.go (superAdmin 排斥 teamAccess/workerAccess + teamAccess role enum + team 唯一性 + 必填校验); webhook.go (Validators 聚合结构 + RegisterWithManager 用于 incluster 模式 ValidatingWebhook); 3 份 table-driven 测试共 30 个 case 全部通过 - SUCCESSFUL - committed as a0b898a
 
-[2026-04-17_Batch-5] - executor - Stage 4 完成 (Items 19-28): TeamReconciler 从 582 行旧单文件完全重写为 9 个 phase-based declarative 文件, 严格对齐 Worker/Manager reconciler 重构后的范式; team_controller.go (Reconcile 主循环 + patchBase + defer-patch status + ObservedGeneration 仅成功时写 + SetupWithManager 挂接 Watches(Worker, workerToTeamsMapper+workerTeamRefPredicates) 和 Watches(Human, humanToTeamsMapper+humanTeamAccessPredicates)); team_scope.go (teamScope 结构); team_phase.go (computeTeamPhase 基于 leader/rooms/multipleLeader 综合判定 Pending/Active/Degraded/Failed + effectivePeerMentions 默认值); team_reconcile_members.go (list Workers 分类 leader/workers, 检测 0/1/2+ leader, 写 LeaderResolved/NoLeader/MultipleLeaders/MembersHealthy conditions, 投影 Team.status.leader/members, setCondition 通用 upsert 工具); team_reconcile_admins.go (list Humans 过滤 teamAccess role=admin → Team.status.admins); team_reconcile_rooms.go (EnsureTeamRooms + ReconcileTeamRoomMembership with desired sets for Team Room + Leader DM Room, LeaderNotReady/TeamRoomReady conditions); team_reconcile_storage.go (非关键 EnsureTeamStorage 调用); team_reconcile_legacy.go (teams-registry 条目从 scope 观察派生而非 spec, nil-safe); team_reconcile_delete.go (finalizer path 只清理 CleanupTeamInfra + legacy registry, 永不删除 Worker CR); 删除过时 team_controller_test.go (测试移除的 helpers) - UNCONFIRMED - 9 份新文件全部编译干净无 lint 错误; controller 包剩余 4 个编译错误全部在 human_controller.go 是 Stage 5 scope
+[2026-04-17_Batch-6] - executor - Stage 5 完成 (Items 29-35): HumanReconciler 从老式 switch Phase 模式重写为 phase-based declarative; human_controller.go (Reconcile + defer-patch + SetupWithManager with Watches(Team, teamToHumansMapper+teamRoomsChangedPredicates) + Watches(Worker, workerToHumansMapper+workerRoomChangedPredicates); mappers list Humans in namespace and filter to those with SuperAdmin/teamAccess/workerAccess relevant to the event); human_scope.go (matrixAccessToken/desiredRooms); human_phase.go (computeHumanPhase: Active/Pending/Failed); human_reconcile_infra.go (EnsureUser with Password=status.InitialPassword seed for idempotent re-login); human_reconcile_rooms.go (computeDesiredRooms: workerAccess → Worker rooms, superAdmin → all Team/Worker rooms, teamAccess → Team Room + admin→LeaderDMRoom + member Worker rooms + leader Worker room for admin; diff with status.Rooms, JoinRoom/LeaveRoom best-effort); human_reconcile_legacy.go (humans-registry with synthesised PermissionLevel + AccessibleTeams for Manager-skill compat); human_reconcile_delete.go (DeactivateUser + registry remove + finalizer) - UNCONFIRMED - internal/controller 包完整编译 + go vet 通过; 既有 service/matrix/webhook 测试全部通过; 剩余破损仅限 server (Stage 10) 和 mocks (Stage 9)
+
+[2026-04-17_Batch-5] - executor - Stage 4 完成 (Items 19-28): TeamReconciler 从 582 行旧单文件完全重写为 9 个 phase-based declarative 文件 - SUCCESSFUL - committed as 8525645
 
 <!-- END EXECUTION LOG -->
 
@@ -214,7 +216,7 @@
 - Stage 2 (Service)：4 / 4
 - Stage 3 (Webhook)：5 / 5
 - Stage 4 (Team Reconciler)：10 / 10
-- Stage 5 (Human Reconciler)：0 / 7
+- Stage 5 (Human Reconciler)：7 / 7
 - Stage 6 (Worker Reconciler)：0 / 5
 - Stage 7 (Manager Reconciler)：0 / 4
 - Stage 8 (Webhook Wiring)：0 / 3
@@ -224,4 +226,4 @@
 - Stage 12 (Integration Tests)：0 / 5
 - Stage 13 (Docs & Validation)：0 / 11
 
-**Total: 28 / 80**
+**Total: 35 / 80**
