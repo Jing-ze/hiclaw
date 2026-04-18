@@ -32,7 +32,11 @@ type Config struct {
 	// Auth
 	AuthAudience string // SA token audience for TokenReview
 
-	// Higress
+	// Provider selection (driven by Helm values)
+	GatewayProvider string // "higress" | "ai-gateway"
+	StorageProvider string // "minio"   | "oss"
+
+	// Higress (self-hosted gateway)
 	HigressBaseURL       string
 	HigressCookieFile    string
 	HigressAdminUser     string
@@ -41,19 +45,22 @@ type Config struct {
 	// Worker backend selection
 	WorkerBackend string
 
-	// Region (used by APIG, STS, etc.)
+	// Region (used by AI Gateway / OSS, etc.)
 	Region string
 
-	// APIG Gateway
+	// AI Gateway (Alibaba Cloud APIG) — only used when GatewayProvider == "ai-gateway"
 	GWGatewayID  string
 	GWModelAPIID string
 	GWEnvID      string
 
-	// STS
-	OSSBucket       string
-	STSRoleArn      string
-	OIDCProviderArn string
-	OIDCTokenFile   string
+	// Object storage bucket (shared by minio and oss backends)
+	OSSBucket string
+
+	// Credential provider sidecar (hiclaw-credential-provider) used by the
+	// controller to obtain STS tokens for its own cloud SDK clients (APIG,
+	// OSS) and for downstream worker credential issuance. Empty when the
+	// sidecar is not deployed (e.g. self-hosted higress+minio stack).
+	CredentialProviderURL string
 
 	// Kubernetes Backend
 	K8sNamespace    string
@@ -192,6 +199,11 @@ func LoadConfig() *Config {
 
 		AuthAudience: envOrDefault("HICLAW_AUTH_AUDIENCE", "hiclaw-controller"),
 
+		GatewayProvider: envOrDefault("HICLAW_GATEWAY_PROVIDER", "higress"),
+		StorageProvider: envOrDefault("HICLAW_STORAGE_PROVIDER", "minio"),
+
+		CredentialProviderURL: os.Getenv("HICLAW_CREDENTIAL_PROVIDER_URL"),
+
 		HigressBaseURL:    envOrDefault("HICLAW_AI_GATEWAY_ADMIN_URL", "http://127.0.0.1:8001"),
 		HigressCookieFile: os.Getenv("HIGRESS_COOKIE_FILE"),
 		// Higress and Matrix share the same admin credentials.
@@ -209,10 +221,7 @@ func LoadConfig() *Config {
 		GWModelAPIID: os.Getenv("HICLAW_GW_MODEL_API_ID"),
 		GWEnvID:      os.Getenv("HICLAW_GW_ENV_ID"),
 
-		OSSBucket:       envOrDefault("HICLAW_FS_BUCKET", "hiclaw-storage"),
-		STSRoleArn:      os.Getenv("ALIBABA_CLOUD_ROLE_ARN"),
-		OIDCProviderArn: os.Getenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN"),
-		OIDCTokenFile:   os.Getenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE"),
+		OSSBucket: envOrDefault("HICLAW_FS_BUCKET", "hiclaw-storage"),
 
 		K8sNamespace:    os.Getenv("HICLAW_K8S_NAMESPACE"),
 		K8sWorkerCPU:    envOrDefault("HICLAW_K8S_WORKER_CPU", "1000m"),
@@ -363,8 +372,16 @@ func (c *Config) DockerConfig() backend.DockerConfig {
 	}
 }
 
-func (c *Config) APIGConfig() backend.APIGConfig {
-	return backend.APIGConfig{
+func (c *Config) STSConfig() credentials.STSConfig {
+	return credentials.STSConfig{
+		OSSBucket: c.OSSBucket,
+	}
+}
+
+// AIGatewayConfig returns the gateway.AIGatewayConfig used when
+// GatewayProvider == "ai-gateway".
+func (c *Config) AIGatewayConfig() gateway.AIGatewayConfig {
+	return gateway.AIGatewayConfig{
 		Region:     c.Region,
 		GatewayID:  c.GWGatewayID,
 		ModelAPIID: c.GWModelAPIID,
@@ -372,14 +389,16 @@ func (c *Config) APIGConfig() backend.APIGConfig {
 	}
 }
 
-func (c *Config) STSConfig() credentials.STSConfig {
-	return credentials.STSConfig{
-		Region:          c.Region,
-		RoleArn:         c.STSRoleArn,
-		OIDCProviderArn: c.OIDCProviderArn,
-		OIDCTokenFile:   c.OIDCTokenFile,
-		OSSBucket:       c.OSSBucket,
-	}
+// UsesAIGateway reports whether the controller should wire the AI Gateway
+// (APIG) implementation of gateway.Client.
+func (c *Config) UsesAIGateway() bool {
+	return c.GatewayProvider == "ai-gateway"
+}
+
+// UsesExternalOSS reports whether the controller should talk to Alibaba
+// Cloud OSS (existing bucket) instead of an embedded MinIO.
+func (c *Config) UsesExternalOSS() bool {
+	return c.StorageProvider == "oss"
 }
 
 func (c *Config) K8sConfig() backend.K8sConfig {

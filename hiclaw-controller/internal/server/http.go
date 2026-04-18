@@ -98,7 +98,7 @@ func NewHTTPServer(addr string, deps ServerDeps) *HTTPServer {
 	// --- Credentials ---
 	// STS is self-scoped: no {name} in path; handler uses CallerIdentity to scope the issued token.
 	ch := NewCredentialsHandler(deps.STS)
-	mux.Handle("POST /api/v1/credentials/sts", mw.RequireAuthz(authpkg.ActionSTS, "worker", nil)(http.HandlerFunc(ch.RefreshSTS)))
+	mux.Handle("POST /api/v1/credentials/sts", mw.RequireAuthz(authpkg.ActionSTS, "credentials", nil)(http.HandlerFunc(ch.RefreshSTS)))
 
 	// --- Docker API passthrough (embedded mode only) ---
 	if deps.KubeMode == "embedded" && deps.SocketPath != "" {

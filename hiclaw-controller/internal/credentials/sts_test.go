@@ -1,136 +1,83 @@
 package credentials
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"os"
+	"context"
+	"errors"
 	"testing"
+
+	"github.com/hiclaw/hiclaw-controller/internal/credprovider"
 )
 
-func TestBuildWorkerPolicy(t *testing.T) {
-	policy := BuildWorkerPolicy("my-bucket", "alice")
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(policy), &parsed); err != nil {
-		t.Fatalf("policy is not valid JSON: %v", err)
-	}
-
-	stmts, ok := parsed["Statement"].([]interface{})
-	if !ok || len(stmts) != 2 {
-		t.Fatalf("expected 2 statements, got %v", parsed["Statement"])
-	}
-
-	// Check ListObjects statement has correct condition
-	stmt0 := stmts[0].(map[string]interface{})
-	cond := stmt0["Condition"].(map[string]interface{})
-	sl := cond["StringLike"].(map[string]interface{})
-	prefixes := sl["oss:Prefix"].([]interface{})
-	if prefixes[0] != "agents/alice/*" {
-		t.Errorf("expected agents/alice/*, got %v", prefixes[0])
-	}
-	if prefixes[1] != "shared/*" {
-		t.Errorf("expected shared/*, got %v", prefixes[1])
-	}
-
-	// Check read/write statement has correct resources
-	stmt1 := stmts[1].(map[string]interface{})
-	resources := stmt1["Resource"].([]interface{})
-	if resources[0] != "acs:oss:*:*:my-bucket/agents/alice/*" {
-		t.Errorf("unexpected resource: %v", resources[0])
-	}
-	if resources[1] != "acs:oss:*:*:my-bucket/shared/*" {
-		t.Errorf("unexpected resource: %v", resources[1])
-	}
+type fakeProvider struct {
+	lastReq credprovider.IssueRequest
+	resp    *credprovider.IssueResponse
+	err     error
 }
 
-func TestIssueWorkerToken(t *testing.T) {
-	// Mock STS endpoint
-	mockSTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		r.ParseForm()
-		if r.FormValue("Action") != "AssumeRoleWithOIDC" {
-			t.Errorf("expected AssumeRoleWithOIDC action")
-		}
-		if r.FormValue("DurationSeconds") != "3600" {
-			t.Errorf("expected 3600 duration")
-		}
-		// Verify policy contains worker name
-		policy := r.FormValue("Policy")
-		if policy == "" {
-			t.Error("expected non-empty policy")
-		}
-		var parsed map[string]interface{}
-		json.Unmarshal([]byte(policy), &parsed)
+func (f *fakeProvider) Issue(_ context.Context, req credprovider.IssueRequest) (*credprovider.IssueResponse, error) {
+	f.lastReq = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resp, nil
+}
 
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"Credentials": map[string]string{
-				"AccessKeyId":     "test-ak",
-				"AccessKeySecret": "test-sk",
-				"SecurityToken":   "test-token",
-				"Expiration":      "2026-03-26T12:00:00Z",
-			},
-		})
-	}))
-	defer mockSTS.Close()
+func TestIssueWorkerToken_DelegatesToProvider(t *testing.T) {
+	fake := &fakeProvider{
+		resp: &credprovider.IssueResponse{
+			AccessKeyID:     "STS.test-ak",
+			AccessKeySecret: "test-sk",
+			SecurityToken:   "test-token",
+			Expiration:      "2026-03-26T12:00:00Z",
+			ExpiresInSec:    3600,
+			Endpoint:        "oss-cn-hangzhou-internal.aliyuncs.com",
+		},
+	}
+	svc := NewSTSService(STSConfig{OSSBucket: "test-bucket"}, fake)
 
-	// Write temp OIDC token file
-	tmpFile, _ := os.CreateTemp("", "oidc-token-*")
-	tmpFile.WriteString("mock-oidc-token")
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-
-	svc := NewSTSServiceWithClient(STSConfig{
-		Region:          "cn-hangzhou",
-		RoleArn:         "acs:ram::123:role/test",
-		OIDCProviderArn: "acs:ram::123:oidc-provider/test",
-		OIDCTokenFile:   tmpFile.Name(),
-		OSSBucket:       "test-bucket",
-	}, mockSTS.Client())
-
-	// Override endpoint to use mock server
-	svc.endpointOverride = mockSTS.URL
-
-	token, err := svc.IssueWorkerToken(t.Context(), "alice")
+	tok, err := svc.IssueWorkerToken(context.Background(), "alice")
 	if err != nil {
-		t.Fatalf("IssueWorkerToken failed: %v", err)
+		t.Fatalf("IssueWorkerToken: %v", err)
 	}
-	if token.AccessKeyID != "test-ak" {
-		t.Errorf("expected test-ak, got %s", token.AccessKeyID)
+	if tok.AccessKeyID != "STS.test-ak" {
+		t.Errorf("AccessKeyID = %q, want STS.test-ak", tok.AccessKeyID)
 	}
-	if token.OSSBucket != "test-bucket" {
-		t.Errorf("expected test-bucket, got %s", token.OSSBucket)
+	if tok.SecurityToken != "test-token" {
+		t.Errorf("SecurityToken = %q, want test-token", tok.SecurityToken)
 	}
-	if token.ExpiresInSec != 3600 {
-		t.Errorf("expected 3600, got %d", token.ExpiresInSec)
+	if tok.OSSEndpoint != "oss-cn-hangzhou-internal.aliyuncs.com" {
+		t.Errorf("OSSEndpoint = %q, want internal endpoint", tok.OSSEndpoint)
+	}
+	if tok.OSSBucket != "test-bucket" {
+		t.Errorf("OSSBucket = %q, want test-bucket", tok.OSSBucket)
+	}
+	if tok.ExpiresInSec != 3600 {
+		t.Errorf("ExpiresInSec = %d, want 3600", tok.ExpiresInSec)
+	}
+	if fake.lastReq.Role != credprovider.RoleWorker {
+		t.Errorf("provider role = %q, want worker", fake.lastReq.Role)
+	}
+	if fake.lastReq.Name != "alice" {
+		t.Errorf("provider name = %q, want alice", fake.lastReq.Name)
+	}
+	if fake.lastReq.Bucket != "test-bucket" {
+		t.Errorf("provider bucket = %q, want test-bucket", fake.lastReq.Bucket)
 	}
 }
 
-func TestIssueWorkerTokenSTSError(t *testing.T) {
-	mockSTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"Code":"NoPermission","Message":"forbidden"}`))
-	}))
-	defer mockSTS.Close()
+func TestIssueWorkerToken_ProviderError(t *testing.T) {
+	svc := NewSTSService(STSConfig{OSSBucket: "b"}, &fakeProvider{err: errors.New("boom")})
+	if _, err := svc.IssueWorkerToken(context.Background(), "alice"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
 
-	tmpFile, _ := os.CreateTemp("", "oidc-token-*")
-	tmpFile.WriteString("mock-oidc-token")
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-
-	svc := NewSTSServiceWithClient(STSConfig{
-		Region:          "cn-hangzhou",
-		RoleArn:         "acs:ram::123:role/test",
-		OIDCProviderArn: "acs:ram::123:oidc-provider/test",
-		OIDCTokenFile:   tmpFile.Name(),
-		OSSBucket:       "test-bucket",
-	}, mockSTS.Client())
-	svc.endpointOverride = mockSTS.URL
-
-	_, err := svc.IssueWorkerToken(t.Context(), "alice")
-	if err == nil {
-		t.Error("expected error for STS 403")
+func TestConfigured_NilProvider(t *testing.T) {
+	svc := NewSTSService(STSConfig{}, nil)
+	if svc.Configured() {
+		t.Fatal("Configured() = true with nil provider, want false")
+	}
+	if _, err := svc.IssueWorkerToken(context.Background(), "x"); err == nil {
+		t.Fatal("expected error from unconfigured service")
 	}
 }

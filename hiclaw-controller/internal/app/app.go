@@ -13,6 +13,7 @@ import (
 	"github.com/hiclaw/hiclaw-controller/internal/config"
 	"github.com/hiclaw/hiclaw-controller/internal/controller"
 	"github.com/hiclaw/hiclaw-controller/internal/credentials"
+	"github.com/hiclaw/hiclaw-controller/internal/credprovider"
 	"github.com/hiclaw/hiclaw-controller/internal/executor"
 	"github.com/hiclaw/hiclaw-controller/internal/gateway"
 	"github.com/hiclaw/hiclaw-controller/internal/initializer"
@@ -51,8 +52,11 @@ type App struct {
 	shell    *executor.Shell
 	packages *executor.PackageResolver
 
-	// STS (optional, only when OIDC is configured)
+	// STS (optional, only when the credential-provider sidecar is configured)
 	stsService *credentials.STSService
+
+	// Credential provider sidecar client (nil when not configured)
+	credProvider credprovider.Client
 
 	// Infrastructure clients
 	matrix   matrix.Client
@@ -120,20 +124,22 @@ func (a *App) Start(ctx context.Context) error {
 			Gateway: a.gateway,
 			RestCfg: a.restCfg,
 			Config: initializer.Config{
-				ManagerEnabled: a.cfg.ManagerEnabled,
-				ManagerModel:   a.cfg.ManagerModel,
-				ManagerRuntime: a.cfg.ManagerRuntime,
-				ManagerImage:   a.cfg.ManagerImage,
-				AdminUser:      a.cfg.MatrixAdminUser,
-				AdminPassword:  a.cfg.MatrixAdminPassword,
-				Namespace:      a.namespace,
-				IsEmbedded:     a.cfg.KubeMode == "embedded",
-				AgentFSDir:     a.cfg.AgentFSDir(),
-				LLMProvider:    a.cfg.LLMProvider,
-				LLMAPIKey:      a.cfg.LLMAPIKey,
-				OpenAIBaseURL:  a.cfg.OpenAIBaseURL,
-				TuwunelURL:     a.cfg.MatrixServerURL,
-				ElementWebURL:  a.cfg.ElementWebURL,
+				ManagerEnabled:  a.cfg.ManagerEnabled,
+				ManagerModel:    a.cfg.ManagerModel,
+				ManagerRuntime:  a.cfg.ManagerRuntime,
+				ManagerImage:    a.cfg.ManagerImage,
+				AdminUser:       a.cfg.MatrixAdminUser,
+				AdminPassword:   a.cfg.MatrixAdminPassword,
+				Namespace:       a.namespace,
+				IsEmbedded:      a.cfg.KubeMode == "embedded",
+				AgentFSDir:      a.cfg.AgentFSDir(),
+				GatewayProvider: a.cfg.GatewayProvider,
+				StorageProvider: a.cfg.StorageProvider,
+				LLMProvider:     a.cfg.LLMProvider,
+				LLMAPIKey:       a.cfg.LLMAPIKey,
+				OpenAIBaseURL:   a.cfg.OpenAIBaseURL,
+				TuwunelURL:      a.cfg.MatrixServerURL,
+				ElementWebURL:   a.cfg.ElementWebURL,
 			},
 		}
 		if err := init.Run(ctx); err != nil {
@@ -164,27 +170,91 @@ func (a *App) initScheme(_ context.Context) error {
 
 func (a *App) initInfraClients(_ context.Context) error {
 	cfg := a.cfg
-	a.matrix = matrix.NewTuwunelClient(cfg.MatrixConfig(), nil)
-	a.gateway = gateway.NewHigressClient(cfg.GatewayConfig(), nil)
-	a.oss = oss.NewMinIOClient(cfg.OSSConfig())
-	if cfg.HasMinIOAdmin() {
-		a.ossAdmin = oss.NewMinIOAdminClient(cfg.OSSConfig())
-	}
-	a.agentGen = agentconfig.NewGenerator(cfg.AgentConfig())
+	logger := ctrl.Log.WithName("app")
 
+	a.matrix = matrix.NewTuwunelClient(cfg.MatrixConfig(), nil)
+	a.agentGen = agentconfig.NewGenerator(cfg.AgentConfig())
 	a.shell = executor.NewShell(cfg.SkillsDir)
 	a.packages = executor.NewPackageResolver("/tmp/import")
 
-	if cfg.OIDCTokenFile != "" {
-		a.stsService = credentials.NewSTSService(cfg.STSConfig())
+	// Credential provider sidecar — required for ai-gateway / external OSS /
+	// worker STS issuance, optional otherwise.
+	if cfg.CredentialProviderURL != "" {
+		a.credProvider = credprovider.NewHTTPClient(cfg.CredentialProviderURL, nil)
+		a.stsService = credentials.NewSTSService(cfg.STSConfig(), a.credProvider)
+		logger.Info("credential-provider sidecar configured", "url", cfg.CredentialProviderURL)
+	}
+
+	// Gateway client — provider-driven.
+	if cfg.UsesAIGateway() {
+		if a.credProvider == nil {
+			return fmt.Errorf("ai-gateway provider requires HICLAW_CREDENTIAL_PROVIDER_URL to be set")
+		}
+		tm := credprovider.NewTokenManager(a.credProvider, credprovider.IssueRequest{
+			Role:   credprovider.RoleController,
+			Bucket: cfg.OSSBucket,
+		})
+		cred := credprovider.NewAliyunCredential(tm)
+		cli, err := gateway.NewAIGatewayClient(cfg.AIGatewayConfig(), cred)
+		if err != nil {
+			return fmt.Errorf("create ai-gateway client: %w", err)
+		}
+		a.gateway = cli
+		logger.Info("gateway provider: ai-gateway (APIG)", "region", cfg.Region, "gatewayId", cfg.GWGatewayID)
+	} else {
+		a.gateway = gateway.NewHigressClient(cfg.GatewayConfig(), nil)
+		logger.Info("gateway provider: higress", "url", cfg.HigressBaseURL)
+	}
+
+	// Storage client — provider-driven. The OSS client reuses the MinIO
+	// implementation (both speak the mc CLI); when talking to external
+	// OSS the mc credentials are sourced per-invocation from the
+	// credential-provider sidecar via a CredentialSource, and the admin
+	// API is unavailable (buckets/users/policies are provisioned externally).
+	mcClient := oss.NewMinIOClient(cfg.OSSConfig())
+	if cfg.UsesExternalOSS() {
+		if a.credProvider == nil {
+			return fmt.Errorf("oss provider requires HICLAW_CREDENTIAL_PROVIDER_URL to be set")
+		}
+		tm := credprovider.NewTokenManager(a.credProvider, credprovider.IssueRequest{
+			Role:   credprovider.RoleController,
+			Bucket: cfg.OSSBucket,
+		})
+		mcClient = mcClient.WithCredentialSource(&ossControllerCredSource{tm: tm})
+		a.oss = mcClient
+		logger.Info("storage provider: oss (external)", "bucket", cfg.OSSBucket)
+	} else {
+		a.oss = mcClient
+		logger.Info("storage provider: minio (embedded)", "bucket", cfg.OSSBucket)
+		if cfg.HasMinIOAdmin() {
+			a.ossAdmin = oss.NewMinIOAdminClient(cfg.OSSConfig())
+		}
 	}
 	return nil
 }
 
+// ossControllerCredSource is an oss.CredentialSource that pulls fresh
+// controller-scoped STS triples from a credprovider.TokenManager.
+type ossControllerCredSource struct {
+	tm *credprovider.TokenManager
+}
+
+func (s *ossControllerCredSource) Resolve(ctx context.Context) (oss.Credentials, error) {
+	t, err := s.tm.Token(ctx)
+	if err != nil {
+		return oss.Credentials{}, err
+	}
+	return oss.Credentials{
+		Endpoint:        t.Endpoint,
+		AccessKeyID:     t.AccessKeyID,
+		AccessKeySecret: t.AccessKeySecret,
+		SecurityToken:   t.SecurityToken,
+	}, nil
+}
+
 func (a *App) initBackends(_ context.Context) error {
-	cloudCreds := buildCloudCredentials(a.cfg)
-	workerBackends, gatewayBackends := buildBackends(a.cfg, cloudCreds)
-	a.registry = backend.NewRegistry(workerBackends, gatewayBackends)
+	workerBackends := buildWorkerBackends(a.cfg)
+	a.registry = backend.NewRegistry(workerBackends)
 	return nil
 }
 
@@ -464,23 +534,16 @@ func (a *App) startInCluster() (*rest.Config, error) {
 // Backend construction
 // =========================================================================
 
-func buildCloudCredentials(cfg *config.Config) backend.CloudCredentialProvider {
-	if cfg.GWGatewayID != "" || cfg.OIDCTokenFile != "" || cfg.OSSBucket != "" {
-		return backend.NewDefaultCloudCredentialProvider()
-	}
-	return nil
-}
-
-func buildBackends(cfg *config.Config, cloudCreds backend.CloudCredentialProvider) ([]backend.WorkerBackend, []backend.GatewayBackend) {
+// buildWorkerBackends selects the worker backend(s) based on kube mode.
+// Gateway selection is handled in initInfraClients via gateway.Client,
+// so this function only cares about worker runtimes (docker vs k8s).
+func buildWorkerBackends(cfg *config.Config) []backend.WorkerBackend {
 	var workers []backend.WorkerBackend
-	var gateways []backend.GatewayBackend
 
-	// Embedded mode always has a Docker backend as the primary option.
 	if cfg.KubeMode == "embedded" {
 		workers = append(workers, backend.NewDockerBackend(cfg.DockerConfig(), cfg.ContainerPrefix))
 	}
 
-	// Explicit backend selection; "k8s" is the default for incluster mode.
 	effectiveBackend := cfg.WorkerBackend
 	if effectiveBackend == "" && cfg.KubeMode == "incluster" {
 		effectiveBackend = "k8s"
@@ -495,15 +558,5 @@ func buildBackends(cfg *config.Config, cloudCreds backend.CloudCredentialProvide
 		}
 	}
 
-	// Cloud API Gateway backend (optional, additive)
-	if cfg.GWGatewayID != "" && cloudCreds != nil {
-		apig, err := backend.NewAPIGBackend(cloudCreds, cfg.APIGConfig())
-		if err != nil {
-			log.Printf("[WARN] Failed to create APIG backend: %v", err)
-		} else {
-			gateways = append(gateways, apig)
-		}
-	}
-
-	return workers, gateways
+	return workers
 }
