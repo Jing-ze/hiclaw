@@ -74,6 +74,13 @@ log_section "Create Test ZIP Package"
 
 WORK_DIR="/tmp/hiclaw-test-${TEST_WORKER}"
 
+# Track the matrix runtime so the worker we import here matches the runtime
+# being exercised by this CI shard. Without this the apply-zip path always
+# defaults to openclaw on the controller side (defaultRuntime("") returns
+# RuntimeOpenClaw), which makes the "copaw shard" run a hidden openclaw
+# worker -- defeating the point of the matrix expansion.
+TEST_WORKER_RUNTIME="${HICLAW_DEFAULT_WORKER_RUNTIME:-openclaw}"
+
 exec_in_manager bash -c "
     mkdir -p ${WORK_DIR}/package/config ${WORK_DIR}/package/skills/test-skill
 
@@ -83,7 +90,8 @@ exec_in_manager bash -c "
   \"version\": 1,
   \"worker\": {
     \"suggested_name\": \"${TEST_WORKER}\",
-    \"model\": \"qwen3.5-plus\"
+    \"model\": \"qwen3.5-plus\",
+    \"runtime\": \"${TEST_WORKER_RUNTIME}\"
   },
   \"source\": {
     \"hostname\": \"integration-test\"
@@ -235,8 +243,16 @@ REGISTRY_ENTRY=$(echo "${REGISTRY_JSON}" | jq -r --arg w "${TEST_WORKER}" '.work
 assert_not_empty "${REGISTRY_ENTRY}" "Worker registered in workers-registry.json"
 
 # Matrix Room (from CRD status)
-ROOM_ID=$(exec_in_agent hiclaw get workers "${TEST_WORKER}" -o json 2>/dev/null | jq -r '.roomID // empty')
+WORKER_JSON_AFTER_RECONCILE=$(exec_in_agent hiclaw get workers "${TEST_WORKER}" -o json 2>/dev/null)
+ROOM_ID=$(echo "${WORKER_JSON_AFTER_RECONCILE}" | jq -r '.roomID // empty')
 assert_not_empty "${ROOM_ID}" "Matrix Room created: ${ROOM_ID}"
+
+# Runtime carried through from the manifest. defaultRuntime("") returns
+# RuntimeOpenClaw on the controller side, so a regression here would silently
+# downgrade copaw shards back to openclaw without any other test catching it.
+WORKER_RUNTIME=$(echo "${WORKER_JSON_AFTER_RECONCILE}" | jq -r '.runtime // empty')
+assert_eq "${TEST_WORKER_RUNTIME}" "${WORKER_RUNTIME}" \
+    "Worker runtime matches manifest (got: '${WORKER_RUNTIME}', want: '${TEST_WORKER_RUNTIME}')"
 
 # openclaw.json in MinIO
 OPENCLAW_EXISTS=$(exec_in_manager bash -c "mc ls '${STORAGE_PREFIX}/agents/${TEST_WORKER}/openclaw.json' >/dev/null 2>&1 && echo yes || echo no")
@@ -246,8 +262,16 @@ else
     log_fail "openclaw.json not found in MinIO"
 fi
 
-# Worker container running
-CONTAINER_RUNNING=$(docker ps --format '{{.Names}}' 2>/dev/null | grep "hiclaw-worker-${TEST_WORKER}" || echo "")
+# Worker container running.
+# The "worker created" log fires as soon as initial reconcile finishes, but the
+# container may be (re)created in a follow-up reconcile if the CR status update
+# bumped ResourceVersion (generation 0 -> 1). Poll for up to 60s to absorb that race.
+CONTAINER_RUNNING=""
+for i in $(seq 1 60); do
+    CONTAINER_RUNNING=$(docker ps --format '{{.Names}}' 2>/dev/null | grep "hiclaw-worker-${TEST_WORKER}$" || echo "")
+    [ -n "${CONTAINER_RUNNING}" ] && break
+    sleep 1
+done
 if [ -n "${CONTAINER_RUNNING}" ]; then
     log_pass "Worker container is running: ${CONTAINER_RUNNING}"
 else
@@ -310,22 +334,17 @@ else
             log_fail "Admin is NOT joined in worker room (auto-join may have failed)"
         fi
 
-        # Send message with @mention (Worker requires m.mentions to wake up)
-        MESSAGE_BODY="${WORKER_MATRIX_ID} Hello! Please reply with a short greeting."
-        TXN_ID="$(date +%s%N)"
-        ROOM_ENC="$(_encode_room_id "${ROOM_ID}")"
-
-        SEND_RESULT=$(exec_in_manager curl -s -X PUT \
-            "${TEST_MATRIX_DIRECT_URL}/_matrix/client/v3/rooms/${ROOM_ENC}/send/m.room.message/${TXN_ID}" \
-            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            -d '{
-                "msgtype": "m.text",
-                "body": "'"${MESSAGE_BODY}"'",
-                "m.mentions": {
-                    "user_ids": ["'"${WORKER_MATRIX_ID}"'"]
-                }
-            }' 2>&1)
+        # Send Element-style mention. openclaw's monitor requires BOTH
+        # `m.mentions.user_ids` metadata AND a visible mention (matrix.to link
+        # in formatted_body OR a regex match on identity), otherwise the event
+        # is dropped with `reason: "no-mention"`. A worker created from a
+        # minimal SOUL has no custom identity regex, so the metadata-only
+        # form silently fails. Use the helper that mirrors what Element sends.
+        SEND_RESULT=$(matrix_send_mention_message \
+            "${ADMIN_TOKEN}" \
+            "${ROOM_ID}" \
+            "${WORKER_MATRIX_ID}" \
+            "Hello! Please reply with a short greeting." 2>&1)
 
         SEND_EVENT=$(echo "${SEND_RESULT}" | jq -r '.event_id // empty' 2>/dev/null)
         if [ -n "${SEND_EVENT}" ] && [ "${SEND_EVENT}" != "null" ]; then
@@ -367,11 +386,17 @@ else
     log_fail "hiclaw delete did not report success"
 fi
 
-sleep 2
-WORKER_AFTER=$(exec_in_agent hiclaw get workers "${TEST_WORKER}" -o json 2>&1 || echo "")
-if echo "${WORKER_AFTER}" | grep -q "not found\|error\|Error"; then
-    log_pass "Worker CR removed after delete"
-elif [ -z "${WORKER_AFTER}" ]; then
+# Wait for CR to be fully removed (finalizer runs container teardown which can take ~10s)
+WORKER_GONE=false
+for i in $(seq 1 60); do
+    WORKER_AFTER=$(exec_in_agent hiclaw get workers "${TEST_WORKER}" -o json 2>&1 || echo "")
+    if echo "${WORKER_AFTER}" | grep -q "not found\|error\|Error" || [ -z "${WORKER_AFTER}" ]; then
+        WORKER_GONE=true
+        break
+    fi
+    sleep 1
+done
+if [ "${WORKER_GONE}" = true ]; then
     log_pass "Worker CR removed after delete"
 else
     log_fail "Worker CR still exists after delete"

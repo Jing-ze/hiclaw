@@ -76,6 +76,11 @@ type Config struct {
 	// Embedded-mode Manager Agent container mounts (host paths, read from env)
 	ManagerWorkspaceDir string // e.g. ~/hiclaw-manager — mounted as /root/manager-workspace
 	HostShareDir        string // e.g. ~/ — mounted as /host-share
+	ManagerConsolePort  string // host port for manager console (default: 18888)
+
+	// Pre-generated Manager secrets (from install script env)
+	ManagerPassword   string // Matrix password for manager user
+	ManagerGatewayKey string // Gateway API key for manager consumer
 
 	// Matrix server
 	MatrixServerURL         string
@@ -110,6 +115,7 @@ type Config struct {
 	CMSLicenseKey     string
 	CMSProject        string
 	CMSWorkspace      string
+	CMSServiceName    string
 
 	// Pre-resolved worker environment defaults (passed to worker containers)
 	WorkerEnv WorkerEnvDefaults
@@ -127,6 +133,18 @@ type WorkerEnvDefaults struct {
 	MatrixURL     string
 	AdminUser     string
 	Runtime       string // "docker" for embedded, "k8s" for incluster
+	YoloMode      bool   // HICLAW_YOLO=1 — propagated to managers and workers
+	MatrixDebug   bool   // HICLAW_MATRIX_DEBUG=1 — propagated to managers and workers,
+	// translated to OPENCLAW_MATRIX_DEBUG=1 by the container entrypoints to
+	// enable structured INFO-level traces in the openclaw matrix plugin.
+
+	// CMS observability (propagated to all workers and managers)
+	CMSTracesEnabled  bool
+	CMSMetricsEnabled bool
+	CMSEndpoint       string
+	CMSLicenseKey     string
+	CMSProject        string
+	CMSWorkspace      string
 }
 
 type managerSpecEnv struct {
@@ -167,10 +185,11 @@ func LoadConfig() *Config {
 
 		AuthAudience: envOrDefault("HICLAW_AUTH_AUDIENCE", "hiclaw-controller"),
 
-		HigressBaseURL:       envOrDefault("HICLAW_AI_GATEWAY_ADMIN_URL", "http://127.0.0.1:8001"),
-		HigressCookieFile:    os.Getenv("HIGRESS_COOKIE_FILE"),
-		HigressAdminUser:     firstNonEmpty(os.Getenv("HICLAW_HIGRESS_ADMIN_USER"), envOrDefault("HICLAW_ADMIN_USER", "admin")),
-		HigressAdminPassword: firstNonEmpty(os.Getenv("HICLAW_HIGRESS_ADMIN_PASSWORD"), envOrDefault("HICLAW_ADMIN_PASSWORD", "admin")),
+		HigressBaseURL:    envOrDefault("HICLAW_AI_GATEWAY_ADMIN_URL", "http://127.0.0.1:8001"),
+		HigressCookieFile: os.Getenv("HIGRESS_COOKIE_FILE"),
+		// Higress and Matrix share the same admin credentials.
+		HigressAdminUser:     envOrDefault("HICLAW_ADMIN_USER", "admin"),
+		HigressAdminPassword: envOrDefault("HICLAW_ADMIN_PASSWORD", "admin"),
 
 		WorkerBackend: firstNonEmpty(
 			os.Getenv("HICLAW_WORKER_BACKEND"),
@@ -205,6 +224,9 @@ func LoadConfig() *Config {
 
 		ManagerWorkspaceDir: os.Getenv("HICLAW_WORKSPACE_DIR"),
 		HostShareDir:        os.Getenv("HICLAW_HOST_SHARE_DIR"),
+		ManagerConsolePort:  envOrDefault("HICLAW_PORT_MANAGER_CONSOLE", "18888"),
+		ManagerPassword:     os.Getenv("HICLAW_MANAGER_PASSWORD"),
+		ManagerGatewayKey:   os.Getenv("HICLAW_MANAGER_GATEWAY_KEY"),
 
 		MatrixServerURL:         envOrDefault("HICLAW_MATRIX_URL", "http://matrix-local.hiclaw.io:8080"),
 		MatrixDomain:            envOrDefault("HICLAW_MATRIX_DOMAIN", "matrix-local.hiclaw.io:8080"),
@@ -232,6 +254,7 @@ func LoadConfig() *Config {
 		CMSLicenseKey:     os.Getenv("HICLAW_CMS_LICENSE_KEY"),
 		CMSProject:        os.Getenv("HICLAW_CMS_PROJECT"),
 		CMSWorkspace:      os.Getenv("HICLAW_CMS_WORKSPACE"),
+		CMSServiceName:    envOrDefault("HICLAW_CMS_SERVICE_NAME", "hiclaw-manager"),
 
 		WorkerEnv: WorkerEnvDefaults{
 			MatrixDomain:  envOrDefault("HICLAW_MATRIX_DOMAIN", "matrix-local.hiclaw.io:8080"),
@@ -242,6 +265,16 @@ func LoadConfig() *Config {
 			AIGatewayURL:  envOrDefault("HICLAW_AI_GATEWAY_URL", "http://aigw-local.hiclaw.io:8080"),
 			MatrixURL:     envOrDefault("HICLAW_MATRIX_URL", "http://matrix-local.hiclaw.io:8080"),
 			AdminUser:     envOrDefault("HICLAW_ADMIN_USER", "admin"),
+			YoloMode:      envBool("HICLAW_YOLO"),
+			MatrixDebug:   envBool("HICLAW_MATRIX_DEBUG"),
+
+			// CMS observability (propagated from controller env to all workers/managers)
+			CMSTracesEnabled:  envBool("HICLAW_CMS_TRACES_ENABLED"),
+			CMSMetricsEnabled: envBool("HICLAW_CMS_METRICS_ENABLED"),
+			CMSEndpoint:       os.Getenv("HICLAW_CMS_ENDPOINT"),
+			CMSLicenseKey:     os.Getenv("HICLAW_CMS_LICENSE_KEY"),
+			CMSProject:        os.Getenv("HICLAW_CMS_PROJECT"),
+			CMSWorkspace:      os.Getenv("HICLAW_CMS_WORKSPACE"),
 		},
 	}
 
@@ -449,15 +482,12 @@ func (c *Config) MatrixConfig() matrix.Config {
 }
 
 func (c *Config) GatewayConfig() gateway.Config {
-	cfg := gateway.Config{
-		ConsoleURL:    c.HigressBaseURL,
-		AdminUser:     c.HigressAdminUser,
-		AdminPassword: c.HigressAdminPassword,
+	return gateway.Config{
+		ConsoleURL:                c.HigressBaseURL,
+		AdminUser:                 c.HigressAdminUser,
+		AdminPassword:             c.HigressAdminPassword,
+		AllowDefaultAdminFallback: c.KubeMode == "embedded",
 	}
-	if c.KubeMode == "embedded" {
-		cfg.PilotURL = "http://127.0.0.1:15014"
-	}
-	return cfg
 }
 
 func (c *Config) OSSConfig() oss.Config {
@@ -487,8 +517,6 @@ func (c *Config) ManagerAgentEnv() map[string]string {
 	setIfNonEmpty("HICLAW_ADMIN_USER", c.MatrixAdminUser)
 	setIfNonEmpty("HICLAW_ADMIN_PASSWORD", c.MatrixAdminPassword)
 	setIfNonEmpty("HICLAW_REGISTRATION_TOKEN", c.MatrixRegistrationToken)
-	setIfNonEmpty("HICLAW_HIGRESS_ADMIN_USER", c.HigressAdminUser)
-	setIfNonEmpty("HICLAW_HIGRESS_ADMIN_PASSWORD", c.HigressAdminPassword)
 	setIfNonEmpty("HICLAW_AI_GATEWAY_ADMIN_URL", c.HigressBaseURL)
 	setIfNonEmpty("HICLAW_MATRIX_URL", c.WorkerEnv.MatrixURL)
 	setIfNonEmpty("HICLAW_AI_GATEWAY_URL", c.WorkerEnv.AIGatewayURL)
@@ -506,6 +534,9 @@ func (c *Config) ManagerAgentEnv() map[string]string {
 	if c.MatrixE2EE {
 		env["HICLAW_MATRIX_E2EE"] = "1"
 	}
+	if c.WorkerEnv.MatrixDebug {
+		env["HICLAW_MATRIX_DEBUG"] = "1"
+	}
 	if c.CMSTracesEnabled {
 		env["HICLAW_CMS_TRACES_ENABLED"] = "1"
 	}
@@ -516,6 +547,7 @@ func (c *Config) ManagerAgentEnv() map[string]string {
 	setIfNonEmpty("HICLAW_CMS_LICENSE_KEY", c.CMSLicenseKey)
 	setIfNonEmpty("HICLAW_CMS_PROJECT", c.CMSProject)
 	setIfNonEmpty("HICLAW_CMS_WORKSPACE", c.CMSWorkspace)
+	setIfNonEmpty("HICLAW_CMS_SERVICE_NAME", c.CMSServiceName)
 	return env
 }
 
@@ -549,5 +581,6 @@ func (c *Config) AgentConfig() agentconfig.Config {
 		CMSLicenseKey:      c.CMSLicenseKey,
 		CMSProject:         c.CMSProject,
 		CMSWorkspace:       c.CMSWorkspace,
+		CMSServiceName:     c.CMSServiceName,
 	}
 }

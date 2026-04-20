@@ -82,6 +82,11 @@ type ProvisionerConfig struct {
 	AuthAudience string
 	MatrixDomain string
 	AdminUser    string
+
+	// Pre-generated Manager secrets (from install script env).
+	// When set, used instead of generating random credentials.
+	ManagerPassword   string
+	ManagerGatewayKey string
 }
 
 // Provisioner orchestrates infrastructure provisioning and deprovisioning
@@ -98,26 +103,35 @@ type Provisioner struct {
 	authAudience string
 	matrixDomain string
 	adminUser    string
+
+	managerPassword   string
+	managerGatewayKey string
 }
 
 func NewProvisioner(cfg ProvisionerConfig) *Provisioner {
 	return &Provisioner{
-		matrix:       cfg.Matrix,
-		gateway:      cfg.Gateway,
-		ossAdmin:     cfg.OSSAdmin,
-		creds:        cfg.Creds,
-		k8sClient:    cfg.K8sClient,
-		kubeMode:     cfg.KubeMode,
-		namespace:    cfg.Namespace,
-		authAudience: cfg.AuthAudience,
-		matrixDomain: cfg.MatrixDomain,
-		adminUser:    cfg.AdminUser,
+		matrix:            cfg.Matrix,
+		gateway:           cfg.Gateway,
+		ossAdmin:          cfg.OSSAdmin,
+		creds:             cfg.Creds,
+		k8sClient:         cfg.K8sClient,
+		kubeMode:          cfg.KubeMode,
+		namespace:         cfg.Namespace,
+		authAudience:      cfg.AuthAudience,
+		matrixDomain:      cfg.MatrixDomain,
+		adminUser:         cfg.AdminUser,
+		managerPassword:   cfg.ManagerPassword,
+		managerGatewayKey: cfg.ManagerGatewayKey,
 	}
 }
 
 // MatrixUserID builds a full Matrix user ID from a localpart.
 func (p *Provisioner) MatrixUserID(name string) string {
 	return p.matrix.UserID(name)
+}
+
+func (p *Provisioner) DeactivateMatrixUser(ctx context.Context, workerName string) error {
+	return p.matrix.DeactivateUser(ctx, workerName)
 }
 
 // ProvisionWorker executes the full infrastructure setup for a new worker:
@@ -162,6 +176,13 @@ func (p *Provisioner) ProvisionWorker(ctx context.Context, req WorkerProvisionRe
 		return nil, fmt.Errorf("Matrix registration failed: %w", err)
 	}
 	creds.MatrixPassword = userCreds.Password
+	// Cache the freshly issued access token so subsequent reconciles can reuse
+	// it via RefreshCredentials instead of issuing a new login (which would
+	// rotate channels.matrix.accessToken in openclaw.json and trigger a
+	// gateway restart).
+	if userCreds.AccessToken != "" {
+		creds.MatrixToken = userCreds.AccessToken
+	}
 
 	// Step 3: Create MinIO user (embedded mode only)
 	if p.ossAdmin != nil {
@@ -241,8 +262,6 @@ func (p *Provisioner) ProvisionWorker(ctx context.Context, req WorkerProvisionRe
 		}
 	}
 
-	p.gateway.TriggerPush()
-
 	return &WorkerProvisionResult{
 		MatrixUserID:   workerMatrixID,
 		MatrixToken:    userCreds.AccessToken,
@@ -300,17 +319,45 @@ func (p *Provisioner) DeprovisionWorker(ctx context.Context, req WorkerDeprovisi
 	return nil
 }
 
-// RefreshCredentials loads persisted credentials and obtains a fresh Matrix token.
-// Used during update operations.
+// ensureMatrixToken returns creds.MatrixToken if it is non-empty; otherwise it
+// performs a fresh matrix.Login under matrixUsername, persists the new token
+// back to creds, and returns it. Reusing the cached token across reconciles is
+// critical: the controller pushes the manager's openclaw.json into the shared
+// filesystem mount on every DeployManagerConfig call, and any change to
+// channels.matrix.accessToken triggers an openclaw matrix-client reload (and
+// in practice often a full gateway restart due to the related token churn),
+// which tears down in-flight agent dispatches. Callers should Save the
+// updated creds back to the credential store after this returns so the
+// freshly-issued token survives controller restarts.
+func (p *Provisioner) ensureMatrixToken(ctx context.Context, matrixUsername string, creds *WorkerCredentials) (string, error) {
+	if creds.MatrixToken != "" {
+		return creds.MatrixToken, nil
+	}
+	tok, err := p.matrix.Login(ctx, matrixUsername, creds.MatrixPassword)
+	if err != nil {
+		return "", err
+	}
+	creds.MatrixToken = tok
+	return tok, nil
+}
+
+// RefreshCredentials loads persisted credentials and obtains a Matrix token,
+// reusing the cached token when present. Used during update operations.
 func (p *Provisioner) RefreshCredentials(ctx context.Context, workerName string) (*RefreshResult, error) {
 	creds, err := p.creds.Load(ctx, workerName)
 	if err != nil || creds == nil {
 		return nil, fmt.Errorf("credentials not found for %s", workerName)
 	}
 
-	matrixToken, err := p.matrix.Login(ctx, workerName, creds.MatrixPassword)
+	hadToken := creds.MatrixToken != ""
+	matrixToken, err := p.ensureMatrixToken(ctx, workerName, creds)
 	if err != nil {
 		return nil, fmt.Errorf("Matrix login failed: %w", err)
+	}
+	if !hadToken {
+		if err := p.creds.Save(ctx, workerName, creds); err != nil {
+			return nil, fmt.Errorf("persist matrix token: %w", err)
+		}
 	}
 
 	return &RefreshResult{
@@ -319,6 +366,53 @@ func (p *Provisioner) RefreshCredentials(ctx context.Context, workerName string)
 		MinIOPassword:  creds.MinIOPassword,
 		MatrixPassword: creds.MatrixPassword,
 	}, nil
+}
+
+// RefreshManagerCredentials loads persisted credentials for the Manager and
+// returns a Matrix access token, reusing the cached token when present. The
+// Manager CR name (e.g. "default") differs from the Matrix username (always
+// "manager"), so this uses a dedicated method.
+func (p *Provisioner) RefreshManagerCredentials(ctx context.Context, managerName string) (*RefreshResult, error) {
+	creds, err := p.creds.Load(ctx, managerName)
+	if err != nil || creds == nil {
+		return nil, fmt.Errorf("credentials not found for manager %s", managerName)
+	}
+
+	hadToken := creds.MatrixToken != ""
+	matrixToken, err := p.ensureMatrixToken(ctx, "manager", creds)
+	if err != nil {
+		return nil, fmt.Errorf("Matrix login failed: %w", err)
+	}
+	if !hadToken {
+		if err := p.creds.Save(ctx, managerName, creds); err != nil {
+			return nil, fmt.Errorf("persist matrix token: %w", err)
+		}
+	}
+
+	return &RefreshResult{
+		MatrixToken:    matrixToken,
+		GatewayKey:     creds.GatewayKey,
+		MinIOPassword:  creds.MinIOPassword,
+		MatrixPassword: creds.MatrixPassword,
+	}, nil
+}
+
+// EnsureManagerGatewayAuth ensures the Manager's gateway consumer exists and is
+// authorized on AI routes. Called during container recreation to restore auth
+// that may have been lost (e.g. after upgrade with fresh Higress state).
+func (p *Provisioner) EnsureManagerGatewayAuth(ctx context.Context, managerName, gatewayKey string) error {
+	consumerName := "manager"
+	_, err := p.gateway.EnsureConsumer(ctx, gateway.ConsumerRequest{
+		Name:          consumerName,
+		CredentialKey: gatewayKey,
+	})
+	if err != nil {
+		return fmt.Errorf("ensure consumer: %w", err)
+	}
+	if err := p.gateway.AuthorizeAIRoutes(ctx, consumerName); err != nil {
+		return fmt.Errorf("authorize AI routes: %w", err)
+	}
+	return nil
 }
 
 // ReconcileMCPAuth reauthorizes MCP servers for a consumer. Returns the list of
@@ -426,6 +520,13 @@ func (p *Provisioner) ProvisionManager(ctx context.Context, req ManagerProvision
 		if err != nil {
 			return nil, fmt.Errorf("generate credentials: %w", err)
 		}
+		// Use pre-generated secrets from install script if available
+		if p.managerPassword != "" {
+			creds.MatrixPassword = p.managerPassword
+		}
+		if p.managerGatewayKey != "" {
+			creds.GatewayKey = p.managerGatewayKey
+		}
 		if err := p.creds.Save(ctx, managerName, creds); err != nil {
 			return nil, fmt.Errorf("save credentials: %w", err)
 		}
@@ -441,6 +542,13 @@ func (p *Provisioner) ProvisionManager(ctx context.Context, req ManagerProvision
 		return nil, fmt.Errorf("Matrix registration failed: %w", err)
 	}
 	creds.MatrixPassword = userCreds.Password
+	// Cache the freshly issued access token so subsequent reconciles can
+	// reuse it via RefreshManagerCredentials instead of issuing a new login
+	// (which would rotate channels.matrix.accessToken in openclaw.json and
+	// trigger a gateway restart).
+	if userCreds.AccessToken != "" {
+		creds.MatrixToken = userCreds.AccessToken
+	}
 
 	// Step 3: Create MinIO user (embedded mode only)
 	if p.ossAdmin != nil {
@@ -450,6 +558,7 @@ func (p *Provisioner) ProvisionManager(ctx context.Context, req ManagerProvision
 		}
 		if err := p.ossAdmin.EnsurePolicy(ctx, oss.PolicyRequest{
 			WorkerName: managerName,
+			IsManager:  true,
 		}); err != nil {
 			return nil, fmt.Errorf("MinIO policy creation failed: %w", err)
 		}
@@ -507,8 +616,6 @@ func (p *Provisioner) ProvisionManager(ctx context.Context, req ManagerProvision
 			logger.Error(err, "MCP authorization partial failure (non-fatal)")
 		}
 	}
-
-	p.gateway.TriggerPush()
 
 	return &ManagerProvisionResult{
 		MatrixUserID:   managerMatrixID,

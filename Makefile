@@ -129,9 +129,11 @@ OPENCLAW_BASE_PUSH_ARG  = --build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE)
 
 build-hiclaw-controller: ## Build hiclaw-controller image (prerequisite for Manager)
 	@echo "==> Building hiclaw-controller image: $(LOCAL_CONTROLLER)"
+	@rm -rf ./hiclaw-controller/agent && cp -r ./manager/agent ./hiclaw-controller/agent
 	docker build $(PLATFORM_FLAG) $(DOCKER_BUILD_ARGS) \
 		-t $(LOCAL_CONTROLLER) \
 		./hiclaw-controller/
+	@rm -rf ./hiclaw-controller/agent
 
 build-manager: build-hiclaw-controller ## Build Manager image (OpenClaw runtime)
 	@echo "==> Building Manager image: $(LOCAL_MANAGER) (registry: $(HIGRESS_REGISTRY))"
@@ -237,6 +239,7 @@ endif
 
 push-hiclaw-controller: buildx-setup ## Build + push multi-arch hiclaw-controller image
 	@echo "==> Building + pushing multi-arch hiclaw-controller: $(CONTROLLER_TAG) [$(MULTIARCH_PLATFORMS)]"
+	@rm -rf ./hiclaw-controller/agent && cp -r ./manager/agent ./hiclaw-controller/agent
 ifeq ($(IS_PODMAN),1)
 	-podman manifest rm $(CONTROLLER_TAG) 2>/dev/null
 	$(foreach plat,$(subst $(comma), ,$(MULTIARCH_PLATFORMS)), \
@@ -255,6 +258,7 @@ else
 		--push \
 		./hiclaw-controller/
 endif
+	@rm -rf ./hiclaw-controller/agent
 
 push-manager: push-hiclaw-controller buildx-setup ## Build + push multi-arch Manager image (OpenClaw)
 	@echo "==> Building + pushing multi-arch Manager: $(MANAGER_TAG) [$(MULTIARCH_PLATFORMS)]"
@@ -516,12 +520,13 @@ ifndef SKIP_BUILD
 endif
 	@echo "==> Installing HiClaw (embedded mode)..."
 	HICLAW_NON_INTERACTIVE=1 \
-		HICLAW_EMBEDDED_IMAGE=$(LOCAL_EMBEDDED) \
-		HICLAW_MANAGER_IMAGE=$(if $(filter copaw,$(HICLAW_MANAGER_RUNTIME)),$(LOCAL_MANAGER_COPAW),$(LOCAL_MANAGER)) \
-		HICLAW_WORKER_IMAGE=$(LOCAL_WORKER) \
-		HICLAW_COPAW_WORKER_IMAGE=$(LOCAL_COPAW_WORKER) \
+		HICLAW_INSTALL_EMBEDDED_IMAGE=$(LOCAL_EMBEDDED) \
+		HICLAW_INSTALL_MANAGER_IMAGE=$(LOCAL_MANAGER) \
+		HICLAW_INSTALL_MANAGER_COPAW_IMAGE=$(LOCAL_MANAGER_COPAW) \
+		HICLAW_INSTALL_WORKER_IMAGE=$(LOCAL_WORKER) \
+		HICLAW_INSTALL_COPAW_WORKER_IMAGE=$(LOCAL_COPAW_WORKER) \
 		HICLAW_MATRIX_E2EE=0 \
-		bash ./install/hiclaw-install-embedded.sh
+		bash ./install/hiclaw-install.sh
 
 wait-ready-embedded: ## Wait for embedded-mode services to be ready
 	@echo "==> Waiting for embedded services..."

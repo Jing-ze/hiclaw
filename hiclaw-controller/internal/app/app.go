@@ -106,8 +106,12 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Run cluster initialization in both embedded and incluster modes.
-	{
+	// Run cluster initialization only after this instance becomes the leader.
+	// In embedded mode (no leader election) Elected() closes immediately.
+	go func() {
+		<-a.mgr.Elected()
+		logger.Info("elected as leader, running cluster initialization")
+
 		init := &initializer.Initializer{
 			OSS:     a.oss,
 			Matrix:  a.matrix,
@@ -122,6 +126,7 @@ func (a *App) Start(ctx context.Context) error {
 				AdminPassword:  a.cfg.MatrixAdminPassword,
 				Namespace:      a.namespace,
 				IsEmbedded:     a.cfg.KubeMode == "embedded",
+				AgentFSDir:     a.cfg.AgentFSDir(),
 				LLMProvider:    a.cfg.LLMProvider,
 				LLMAPIKey:      a.cfg.LLMAPIKey,
 				OpenAIBaseURL:  a.cfg.OpenAIBaseURL,
@@ -132,12 +137,12 @@ func (a *App) Start(ctx context.Context) error {
 		if err := init.Run(ctx); err != nil {
 			logger.Error(err, "cluster initialization failed (non-fatal, continuing)")
 		}
-	}
 
-	logger.Info("hiclaw-controller ready",
-		"kubeMode", a.cfg.KubeMode,
-		"httpAddr", a.cfg.HTTPAddr,
-	)
+		logger.Info("hiclaw-controller ready",
+			"kubeMode", a.cfg.KubeMode,
+			"httpAddr", a.cfg.HTTPAddr,
+		)
+	}()
 
 	return a.mgr.Start(ctx)
 }
@@ -223,16 +228,18 @@ func (a *App) initServiceLayer(_ context.Context) error {
 	}
 
 	a.provisioner = service.NewProvisioner(service.ProvisionerConfig{
-		Matrix:       a.matrix,
-		Gateway:      a.gateway,
-		OSSAdmin:     a.ossAdmin,
-		Creds:        credStore,
-		K8sClient:    a.k8sClient,
-		KubeMode:     cfg.KubeMode,
-		Namespace:    a.namespace,
-		AuthAudience: cfg.AuthAudience,
-		MatrixDomain: cfg.MatrixDomain,
-		AdminUser:    cfg.MatrixAdminUser,
+		Matrix:            a.matrix,
+		Gateway:           a.gateway,
+		OSSAdmin:          a.ossAdmin,
+		Creds:             credStore,
+		K8sClient:         a.k8sClient,
+		KubeMode:          cfg.KubeMode,
+		Namespace:         a.namespace,
+		AuthAudience:      cfg.AuthAudience,
+		MatrixDomain:      cfg.MatrixDomain,
+		AdminUser:         cfg.MatrixAdminUser,
+		ManagerPassword:   cfg.ManagerPassword,
+		ManagerGatewayKey: cfg.ManagerGatewayKey,
 	})
 
 	a.envBuilder = service.NewWorkerEnvBuilder(cfg.WorkerEnv)
@@ -299,9 +306,10 @@ func (a *App) initReconcilers(_ context.Context) error {
 	}
 	if a.cfg.KubeMode == "embedded" {
 		mgrReconciler.EmbeddedConfig = &controller.ManagerEmbeddedConfig{
-			WorkspaceDir: a.cfg.ManagerWorkspaceDir,
-			HostShareDir: a.cfg.HostShareDir,
-			ExtraEnv:     a.cfg.ManagerAgentEnv(),
+			WorkspaceDir:       a.cfg.ManagerWorkspaceDir,
+			HostShareDir:       a.cfg.HostShareDir,
+			ExtraEnv:           a.cfg.ManagerAgentEnv(),
+			ManagerConsolePort: a.cfg.ManagerConsolePort,
 		}
 	}
 	if err := mgrReconciler.SetupWithManager(a.mgr); err != nil {
@@ -385,11 +393,17 @@ func (a *App) startInCluster() (*rest.Config, error) {
 	logger.Info("starting in-cluster mode")
 
 	restCfg := ctrl.GetConfigOrDie()
-	opts := ctrl.Options{Scheme: a.scheme}
+	opts := ctrl.Options{
+		Scheme:                        a.scheme,
+		LeaderElection:                true,
+		LeaderElectionID:              "hiclaw-controller-leader",
+		LeaderElectionReleaseOnCancel: true,
+	}
 	if a.cfg.K8sNamespace != "" {
 		opts.Cache.DefaultNamespaces = map[string]cache.Config{
 			a.cfg.K8sNamespace: {},
 		}
+		opts.LeaderElectionNamespace = a.cfg.K8sNamespace
 	}
 	var err error
 	a.mgr, err = ctrl.NewManager(restCfg, opts)
