@@ -49,6 +49,14 @@ type RoomInfo struct {
 	Created bool // true if newly created, false if ExistingRoomID was used
 }
 
+// RoomMember describes a user's presence in a Matrix room.
+// Only members whose Membership is "join" or "invite" are surfaced via
+// ListRoomMembers; leave/ban/knock entries are filtered out by the client.
+type RoomMember struct {
+	UserID     string
+	Membership string // "join" | "invite"
+}
+
 // GeneratePassword produces a cryptographically secure random password
 // of the given byte length, hex-encoded (output length = 2*n).
 func GeneratePassword(n int) (string, error) {

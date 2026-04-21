@@ -185,6 +185,196 @@ func TestCreateRoom_ExistingRoomID(t *testing.T) {
 	}
 }
 
+// adminLoginHandler returns a handler that responds to admin login with a
+// fixed token, allowing tests that exercise admin-driven endpoints.
+func adminLoginHandler(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"access_token": "admin-token"})
+}
+
+func TestListRoomMembers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/members":
+			if auth := r.Header.Get("Authorization"); auth != "Bearer admin-token" {
+				t.Errorf("Authorization = %q, want Bearer admin-token", auth)
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"chunk": []map[string]interface{}{
+					{"state_key": "@alice:d", "content": map[string]string{"membership": "join"}},
+					{"state_key": "@bob:d", "content": map[string]string{"membership": "invite"}},
+					{"state_key": "@carol:d", "content": map[string]string{"membership": "leave"}},
+					{"state_key": "@dave:d", "content": map[string]string{"membership": "ban"}},
+					{"state_key": "", "content": map[string]string{"membership": "join"}},
+				},
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL:     server.URL,
+		Domain:        "d",
+		AdminUser:     "admin",
+		AdminPassword: "pw",
+	}, server.Client())
+
+	members, err := c.ListRoomMembers(context.Background(), "!room:d")
+	if err != nil {
+		t.Fatalf("ListRoomMembers: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("got %d members, want 2 (filtered join+invite); members=%+v", len(members), members)
+	}
+	if members[0].UserID != "@alice:d" || members[0].Membership != "join" {
+		t.Errorf("members[0] = %+v, want {@alice:d join}", members[0])
+	}
+	if members[1].UserID != "@bob:d" || members[1].Membership != "invite" {
+		t.Errorf("members[1] = %+v, want {@bob:d invite}", members[1])
+	}
+}
+
+func TestInviteToRoom_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/invite":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["user_id"] != "@alice:d" {
+				t.Errorf("user_id = %q, want @alice:d", body["user_id"])
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("{}"))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.InviteToRoom(context.Background(), "!room:d", "@alice:d"); err != nil {
+		t.Fatalf("InviteToRoom: %v", err)
+	}
+}
+
+func TestInviteToRoom_Idempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/invite":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_FORBIDDEN",
+				"error":   "@alice:d is already in the room.",
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.InviteToRoom(context.Background(), "!room:d", "@alice:d"); err != nil {
+		t.Errorf("expected nil for already-in-room, got %v", err)
+	}
+}
+
+func TestInviteToRoom_RealError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/invite":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_FORBIDDEN",
+				"error":   "inviter has insufficient power level",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.InviteToRoom(context.Background(), "!room:d", "@alice:d"); err == nil {
+		t.Error("expected error for unrelated 403, got nil")
+	}
+}
+
+func TestKickFromRoom_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/kick":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["user_id"] != "@alice:d" {
+				t.Errorf("user_id = %q", body["user_id"])
+			}
+			if body["reason"] != "access revoked" {
+				t.Errorf("reason = %q", body["reason"])
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("{}"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.KickFromRoom(context.Background(), "!room:d", "@alice:d", "access revoked"); err != nil {
+		t.Fatalf("KickFromRoom: %v", err)
+	}
+}
+
+func TestKickFromRoom_Idempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/kick":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_FORBIDDEN",
+				"error":   "User @alice:d is not in the room.",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.KickFromRoom(context.Background(), "!room:d", "@alice:d", ""); err != nil {
+		t.Errorf("expected nil for not-in-room, got %v", err)
+	}
+}
+
 func TestUserID(t *testing.T) {
 	c := NewTuwunelClient(Config{Domain: "matrix.example.com:8080"}, nil)
 	got := c.UserID("alice")

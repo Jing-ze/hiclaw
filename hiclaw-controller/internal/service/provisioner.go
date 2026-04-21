@@ -47,11 +47,17 @@ type WorkerDeprovisionRequest struct {
 
 // TeamRoomRequest describes rooms to create for a team.
 type TeamRoomRequest struct {
-	TeamName       string
-	LeaderName     string
-	WorkerNames    []string
-	AdminSpec      *v1beta1.TeamAdminSpec
+	TeamName    string
+	LeaderName  string
+	WorkerNames []string
+	AdminSpec   *v1beta1.TeamAdminSpec
+	// ExistingRoomID is the team group room ID from previous reconciles.
+	// If non-empty, the creation step is skipped and membership is
+	// reconciled against the existing room instead.
 	ExistingRoomID string
+	// ExistingLeaderDMRoomID is the leader DM room ID from previous
+	// reconciles. Same idempotency semantics as ExistingRoomID.
+	ExistingLeaderDMRoomID string
 }
 
 // TeamRoomResult contains the created room IDs.
@@ -424,7 +430,11 @@ func (p *Provisioner) ReconcileMCPAuth(ctx context.Context, consumerName string,
 	return p.gateway.AuthorizeMCPServers(ctx, consumerName, mcpServers)
 }
 
-// ProvisionTeamRooms creates the team room and leader DM room.
+// ProvisionTeamRooms creates (or reuses) the team room and leader DM room
+// and reconciles their Matrix memberships against the desired member set.
+// On subsequent reconciles (ExistingRoomID / ExistingLeaderDMRoomID set) it
+// skips room creation and only adjusts membership, so newly-added workers
+// are invited and removed workers are kicked.
 func (p *Provisioner) ProvisionTeamRooms(ctx context.Context, req TeamRoomRequest) (*TeamRoomResult, error) {
 	logger := log.FromContext(ctx)
 	managerMatrixID := p.matrix.UserID("manager")
@@ -452,7 +462,16 @@ func (p *Provisioner) ProvisionTeamRooms(ctx context.Context, req TeamRoomReques
 	if err != nil {
 		return nil, fmt.Errorf("team room creation failed: %w", err)
 	}
-	logger.Info("team room ready", "roomID", teamRoom.RoomID)
+	logger.Info("team room ready", "roomID", teamRoom.RoomID, "created", teamRoom.Created)
+
+	// When the room already existed, CreateRoom short-circuited without
+	// sending invites. Reconcile membership explicitly so workers added to
+	// (or removed from) the Team after initial provisioning are synced.
+	if !teamRoom.Created {
+		if err := p.ReconcileRoomMembership(ctx, teamRoom.RoomID, teamInvites); err != nil {
+			return nil, fmt.Errorf("reconcile team room membership: %w", err)
+		}
+	}
 
 	// Leader DM Room: Leader + Admin (+ optional Team Admin)
 	leaderDMInvites := []string{adminMatrixID, leaderMatrixID}
@@ -460,20 +479,98 @@ func (p *Provisioner) ProvisionTeamRooms(ctx context.Context, req TeamRoomReques
 		leaderDMInvites = append(leaderDMInvites, req.AdminSpec.MatrixUserID)
 	}
 	leaderDMRoom, err := p.matrix.CreateRoom(ctx, matrix.CreateRoomRequest{
-		Name:        fmt.Sprintf("Leader DM: %s", req.LeaderName),
-		Topic:       fmt.Sprintf("DM channel for team leader %s", req.LeaderName),
-		Invite:      leaderDMInvites,
-		PowerLevels: teamPowerLevels,
+		Name:           fmt.Sprintf("Leader DM: %s", req.LeaderName),
+		Topic:          fmt.Sprintf("DM channel for team leader %s", req.LeaderName),
+		Invite:         leaderDMInvites,
+		PowerLevels:    teamPowerLevels,
+		ExistingRoomID: req.ExistingLeaderDMRoomID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("leader DM room creation failed: %w", err)
 	}
-	logger.Info("leader DM room ready", "roomID", leaderDMRoom.RoomID)
+	logger.Info("leader DM room ready", "roomID", leaderDMRoom.RoomID, "created", leaderDMRoom.Created)
+
+	if !leaderDMRoom.Created {
+		if err := p.ReconcileRoomMembership(ctx, leaderDMRoom.RoomID, leaderDMInvites); err != nil {
+			return nil, fmt.Errorf("reconcile leader DM membership: %w", err)
+		}
+	}
 
 	return &TeamRoomResult{
 		TeamRoomID:     teamRoom.RoomID,
 		LeaderDMRoomID: leaderDMRoom.RoomID,
 	}, nil
+}
+
+// EnsureRoomMember invites userID into roomID. Idempotent (treats
+// already-joined/invited as success). Returns nil on success.
+func (p *Provisioner) EnsureRoomMember(ctx context.Context, roomID, userID string) error {
+	return p.matrix.InviteToRoom(ctx, roomID, userID)
+}
+
+// EnsureRoomNonMember kicks userID out of roomID. Idempotent (treats
+// not-in-room as success). Returns nil on success.
+func (p *Provisioner) EnsureRoomNonMember(ctx context.Context, roomID, userID, reason string) error {
+	return p.matrix.KickFromRoom(ctx, roomID, userID, reason)
+}
+
+// ReconcileRoomMembership drives the membership of roomID to match `desired`
+// (a list of full Matrix user IDs). Users present in `desired` but not in
+// the room are invited; users in the room but not in `desired` are kicked.
+// Per-user errors are logged and collected; the first error encountered is
+// returned after processing every user (best-effort semantics, consistent
+// with DeprovisionWorker).
+func (p *Provisioner) ReconcileRoomMembership(ctx context.Context, roomID string, desired []string) error {
+	logger := log.FromContext(ctx)
+
+	current, err := p.matrix.ListRoomMembers(ctx, roomID)
+	if err != nil {
+		return fmt.Errorf("list members of %s: %w", roomID, err)
+	}
+
+	desiredSet := make(map[string]struct{}, len(desired))
+	for _, u := range desired {
+		if u == "" {
+			continue
+		}
+		desiredSet[u] = struct{}{}
+	}
+	currentSet := make(map[string]struct{}, len(current))
+	for _, m := range current {
+		currentSet[m.UserID] = struct{}{}
+	}
+
+	var firstErr error
+
+	for _, u := range desired {
+		if _, ok := currentSet[u]; ok {
+			continue
+		}
+		if err := p.matrix.InviteToRoom(ctx, roomID, u); err != nil {
+			logger.Error(err, "failed to invite user to room", "room", roomID, "user", u)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	for _, m := range current {
+		if _, ok := desiredSet[m.UserID]; ok {
+			continue
+		}
+		// Leave admin bot alone even if it isn't in `desired`: admin owns
+		// power level 100 and some rooms (e.g. Manager Admin DM) expect it
+		// implicitly. Callers must include the admin in `desired` when they
+		// want it to stay.
+		if err := p.matrix.KickFromRoom(ctx, roomID, m.UserID, "removed from desired member set"); err != nil {
+			logger.Error(err, "failed to kick user from room", "room", roomID, "user", m.UserID)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	return firstErr
 }
 
 // DeleteCredentials removes persisted credentials for a worker.

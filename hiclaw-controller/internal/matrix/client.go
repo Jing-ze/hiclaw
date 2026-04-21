@@ -39,6 +39,19 @@ type Client interface {
 	// Message history is preserved (erase=false).
 	DeactivateUser(ctx context.Context, username string) error
 
+	// ListRoomMembers returns users currently in the room whose membership
+	// is "join" or "invite". leave/ban/knock entries are filtered out.
+	// Uses an admin access token internally.
+	ListRoomMembers(ctx context.Context, roomID string) ([]RoomMember, error)
+
+	// InviteToRoom invites userID to roomID using an admin access token.
+	// Idempotent: returns nil if the user is already joined/invited.
+	InviteToRoom(ctx context.Context, roomID, userID string) error
+
+	// KickFromRoom removes userID from roomID using an admin access token.
+	// Idempotent: returns nil if the user is not currently in the room.
+	KickFromRoom(ctx context.Context, roomID, userID, reason string) error
+
 	// UserID builds a full Matrix user ID from a localpart.
 	UserID(localpart string) string
 }
@@ -298,6 +311,124 @@ func (c *TuwunelClient) DeactivateUser(ctx context.Context, username string) err
 		return fmt.Errorf("deactivate user %s: HTTP %d", username, statusCode)
 	}
 	return nil
+}
+
+func (c *TuwunelClient) ListRoomMembers(ctx context.Context, roomID string) ([]RoomMember, error) {
+	token, err := c.ensureAdminToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list members %s: %w", roomID, err)
+	}
+	encodedRoom := encodeRoomID(roomID)
+
+	var resp struct {
+		Chunk []struct {
+			StateKey string `json:"state_key"`
+			Content  struct {
+				Membership string `json:"membership"`
+			} `json:"content"`
+		} `json:"chunk"`
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+
+	statusCode, err := c.doJSON(ctx, http.MethodGet,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/members", encodedRoom),
+		token, nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("list members %s: %w", roomID, err)
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("list members %s: HTTP %d %s %s",
+			roomID, statusCode, resp.ErrCode, resp.Error)
+	}
+
+	members := make([]RoomMember, 0, len(resp.Chunk))
+	for _, ev := range resp.Chunk {
+		if ev.StateKey == "" {
+			continue
+		}
+		if ev.Content.Membership != "join" && ev.Content.Membership != "invite" {
+			continue
+		}
+		members = append(members, RoomMember{
+			UserID:     ev.StateKey,
+			Membership: ev.Content.Membership,
+		})
+	}
+	return members, nil
+}
+
+func (c *TuwunelClient) InviteToRoom(ctx context.Context, roomID, userID string) error {
+	token, err := c.ensureAdminToken(ctx)
+	if err != nil {
+		return fmt.Errorf("invite %s to %s: %w", userID, roomID, err)
+	}
+	encodedRoom := encodeRoomID(roomID)
+
+	var resp struct {
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+
+	statusCode, err := c.doJSON(ctx, http.MethodPost,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/invite", encodedRoom),
+		token, map[string]string{"user_id": userID}, &resp)
+	if err != nil {
+		return fmt.Errorf("invite %s to %s: %w", userID, roomID, err)
+	}
+	if statusCode == http.StatusOK || statusCode == http.StatusCreated {
+		return nil
+	}
+	// Idempotent: user already in the room.
+	if statusCode == http.StatusForbidden && resp.ErrCode == "M_FORBIDDEN" {
+		lower := strings.ToLower(resp.Error)
+		if strings.Contains(lower, "already in") || strings.Contains(lower, "already a member") {
+			return nil
+		}
+	}
+	return fmt.Errorf("invite %s to %s: HTTP %d %s %s",
+		userID, roomID, statusCode, resp.ErrCode, resp.Error)
+}
+
+func (c *TuwunelClient) KickFromRoom(ctx context.Context, roomID, userID, reason string) error {
+	token, err := c.ensureAdminToken(ctx)
+	if err != nil {
+		return fmt.Errorf("kick %s from %s: %w", userID, roomID, err)
+	}
+	encodedRoom := encodeRoomID(roomID)
+
+	body := map[string]string{"user_id": userID}
+	if reason != "" {
+		body["reason"] = reason
+	}
+
+	var resp struct {
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+
+	statusCode, err := c.doJSON(ctx, http.MethodPost,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/kick", encodedRoom),
+		token, body, &resp)
+	if err != nil {
+		return fmt.Errorf("kick %s from %s: %w", userID, roomID, err)
+	}
+	if statusCode == http.StatusOK || statusCode == http.StatusCreated {
+		return nil
+	}
+	// Idempotent: user not in the room (or already left).
+	if statusCode == http.StatusNotFound {
+		return nil
+	}
+	if statusCode == http.StatusForbidden && resp.ErrCode == "M_FORBIDDEN" {
+		lower := strings.ToLower(resp.Error)
+		if strings.Contains(lower, "not in") || strings.Contains(lower, "not a member") ||
+			strings.Contains(lower, "cannot kick") {
+			return nil
+		}
+	}
+	return fmt.Errorf("kick %s from %s: HTTP %d %s %s",
+		userID, roomID, statusCode, resp.ErrCode, resp.Error)
 }
 
 // doJSON performs an HTTP request with JSON body/response.

@@ -113,11 +113,12 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 
 	// --- Step 1: Team-level infrastructure ---
 	rooms, err := r.Provisioner.ProvisionTeamRooms(ctx, service.TeamRoomRequest{
-		TeamName:       t.Name,
-		LeaderName:     t.Spec.Leader.Name,
-		WorkerNames:    workerNames,
-		AdminSpec:      t.Spec.Admin,
-		ExistingRoomID: t.Status.TeamRoomID,
+		TeamName:               t.Name,
+		LeaderName:             t.Spec.Leader.Name,
+		WorkerNames:            workerNames,
+		AdminSpec:              t.Spec.Admin,
+		ExistingRoomID:         t.Status.TeamRoomID,
+		ExistingLeaderDMRoomID: t.Status.LeaderDMRoomID,
 	})
 	if err != nil {
 		return r.failTeam(ctx, t, patchBase, fmt.Sprintf("provision team rooms: %v", err))
