@@ -165,6 +165,15 @@ type TeamStatus struct {
 	// next reconcile retries Provision instead of silently succeeding via
 	// Refresh — mirroring WorkerReconciler's Status.MatrixUserID semantics.
 	ObservedMembers []string `json:"observedMembers,omitempty"`
+	// MemberSpecHashes records, per member, the hash of the WorkerSpec at
+	// which the member's container was last successfully provisioned.
+	// TeamReconciler compares each member's current spec hash against this
+	// stored value to decide whether the container needs recreation — the
+	// per-member analogue of Worker.Status.ObservedGeneration. Per-member
+	// (as opposed to a single Team-wide generation) is required because
+	// Team.Generation bumps on any spec change and would otherwise trigger
+	// container recreation for unaffected members.
+	MemberSpecHashes map[string]string `json:"memberSpecHashes,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

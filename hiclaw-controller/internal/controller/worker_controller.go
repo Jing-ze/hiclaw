@@ -212,12 +212,18 @@ func (r *WorkerReconciler) reconcileLegacy(ctx context.Context, w *v1beta1.Worke
 func workerMemberContext(w *v1beta1.Worker) MemberContext {
 	role := roleForAnnotations(w.Annotations["hiclaw.io/role"], w.Annotations["hiclaw.io/team-leader"])
 	return MemberContext{
-		Name:                 w.Name,
-		Namespace:            w.Namespace,
-		Role:                 role,
-		Spec:                 w.Spec,
-		Generation:           w.Generation,
-		ObservedGeneration:   w.Status.ObservedGeneration,
+		Name:               w.Name,
+		Namespace:          w.Namespace,
+		Role:               role,
+		Spec:               w.Spec,
+		Generation:         w.Generation,
+		ObservedGeneration: w.Status.ObservedGeneration,
+		// For Worker CR, spec change is detected the classic way:
+		// Generation increments on every spec mutation; ObservedGeneration
+		// is written after a successful reconcile. Status defaults to 0
+		// on a freshly created Worker, which correctly marks the first
+		// reconcile as "changed" so the initial container is created.
+		SpecChanged:          w.Generation != w.Status.ObservedGeneration,
 		IsUpdate:             w.Status.Phase != "" && w.Status.Phase != "Pending" && w.Status.Phase != "Failed",
 		TeamName:             w.Annotations["hiclaw.io/team"],
 		TeamLeaderName:       w.Annotations["hiclaw.io/team-leader"],

@@ -31,12 +31,32 @@ func (r MemberRole) String() string { return string(r) }
 // per Team member directly from the Team CR without ever materializing a
 // Worker CR.
 type MemberContext struct {
-	Name               string
-	Namespace          string
-	Role               MemberRole
-	Spec               v1beta1.WorkerSpec
+	Name      string
+	Namespace string
+	Role      MemberRole
+	Spec      v1beta1.WorkerSpec
+
+	// Generation / ObservedGeneration are metadata included in logs to aid
+	// debugging. They are NOT used for spec-change detection — callers must
+	// set SpecChanged explicitly (see field doc below).
 	Generation         int64
 	ObservedGeneration int64
+
+	// SpecChanged indicates the member's desired spec differs from the spec
+	// at which its container was last successfully provisioned. When true,
+	// ReconcileMemberContainer recreates the container; when false, a
+	// running/starting container is left alone.
+	//
+	// Callers are responsible for computing this correctly:
+	//   WorkerReconciler: w.Generation != w.Status.ObservedGeneration
+	//   TeamReconciler:   hashOf(spec) != Team.Status.MemberSpecHashes[name]
+	//
+	// Using a boolean (instead of reusing Generation != ObservedGeneration)
+	// isolates the "did the spec change" question from the transport that
+	// answers it, so Team members — which have no per-member Generation —
+	// can participate without abusing the int64 fields.
+	SpecChanged bool
+
 	// IsUpdate indicates the member has been successfully provisioned before;
 	// controls MCP reauthorization and deployer "update" semantics.
 	IsUpdate bool
@@ -216,10 +236,10 @@ func ensureMemberContainerPresent(ctx context.Context, d MemberDeps, m MemberCon
 		return reconcile.Result{}, fmt.Errorf("query container status: %w", err)
 	}
 
-	// Spec change detection: for Worker CR, Generation != ObservedGeneration.
-	// For Team members, the TeamReconciler passes m.Generation == m.ObservedGeneration
-	// on subsequent reconciles of an unchanged Team spec, so specChanged stays false.
-	specChanged := m.Generation != m.ObservedGeneration
+	// Spec-change decision is owned by the caller (see MemberContext.SpecChanged
+	// doc). Both Worker and Team paths fill this boolean with their own
+	// equivalence check so this phase stays agnostic of the upstream CR.
+	specChanged := m.SpecChanged
 
 	switch result.Status {
 	case backend.StatusRunning, backend.StatusStarting, backend.StatusReady:

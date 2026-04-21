@@ -193,6 +193,11 @@ spec:
                   description: "Names of members (leader + workers) whose infrastructure provisioning has succeeded at least once. Used by the TeamReconciler to pick Provision vs Refresh and to detect stale members that need cleanup."
                   items:
                     type: string
+                memberSpecHashes:
+                  type: object
+                  description: "Per-member hash of the last-provisioned WorkerSpec. TeamReconciler compares each member's current spec hash against this value to decide whether the container needs recreation (per-member analogue of Worker.status.observedGeneration)."
+                  additionalProperties:
+                    type: string
       subresources:
         status: {}
       additionalPrinterColumns:

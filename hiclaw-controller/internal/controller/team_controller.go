@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"time"
@@ -176,6 +178,15 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 	if workerExposed == nil {
 		workerExposed = make(map[string][]v1beta1.ExposedPortStatus)
 	}
+	// specHashes carries forward the previous reconcile's hashes and gets
+	// updated per member on success. Stale members (removed from the spec)
+	// are dropped below after the loop.
+	specHashes := make(map[string]string, len(desiredMembers))
+	for k, v := range t.Status.MemberSpecHashes {
+		if _, keep := desiredNames[k]; keep {
+			specHashes[k] = v
+		}
+	}
 	for i := range desiredMembers {
 		m := desiredMembers[i]
 		if existing, ok := workerExposed[m.Name]; ok {
@@ -187,6 +198,10 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 			continue
 		}
 		observedSet[m.Name] = struct{}{}
+		// Record the hash only after a successful reconcile so a failed
+		// mid-phase attempt on the next pass still sees SpecChanged=true
+		// and retries the container recreation.
+		specHashes[m.Name] = hashMemberSourceSpec(t, m.Role, m.Name)
 	}
 
 	// --- Step 5: Leader-specific hooks (coordination, groupAllowFrom, registry) ---
@@ -234,6 +249,11 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 	sort.Strings(observed)
 
 	t.Status.ObservedMembers = observed
+	if len(specHashes) > 0 {
+		t.Status.MemberSpecHashes = specHashes
+	} else {
+		t.Status.MemberSpecHashes = nil
+	}
 	t.Status.TotalWorkers = len(t.Spec.Workers)
 	t.Status.LeaderReady = leaderReady
 	t.Status.ReadyWorkers = readyWorkers
@@ -450,6 +470,12 @@ func (r *TeamReconciler) failTeam(ctx context.Context, t *v1beta1.Team, patchBas
 // buildDesiredMembers translates a Team spec into MemberContexts for leader
 // and each worker. Every member is tagged with PodLabel hiclaw.io/team=<name>
 // so the Team controller can watch their pod lifecycle via a shared predicate.
+//
+// SpecChanged is computed per member via hashMemberSourceSpec, which digests
+// only the user-authored fields that govern a member container. Derived
+// context (peer list inflated into ChannelPolicy, admin Matrix injections)
+// is intentionally excluded so adding/removing a peer does NOT recreate the
+// other members — only the newly added member gets a fresh container.
 func buildDesiredMembers(t *v1beta1.Team) []MemberContext {
 	observed := make(map[string]struct{}, len(t.Status.ObservedMembers))
 	for _, n := range t.Status.ObservedMembers {
@@ -465,6 +491,7 @@ func buildDesiredMembers(t *v1beta1.Team) []MemberContext {
 		Role:              RoleTeamLeader,
 		Spec:              leaderSpec,
 		Generation:        t.Generation,
+		SpecChanged:       memberSpecChanged(t, RoleTeamLeader, t.Spec.Leader.Name),
 		IsUpdate:          leaderObserved,
 		TeamName:          t.Name,
 		TeamLeaderName:    "",
@@ -484,6 +511,7 @@ func buildDesiredMembers(t *v1beta1.Team) []MemberContext {
 			Role:              RoleTeamWorker,
 			Spec:              spec,
 			Generation:        t.Generation,
+			SpecChanged:       memberSpecChanged(t, RoleTeamWorker, w.Name),
 			IsUpdate:          workerObserved,
 			TeamName:          t.Name,
 			TeamLeaderName:    t.Spec.Leader.Name,
@@ -495,6 +523,85 @@ func buildDesiredMembers(t *v1beta1.Team) []MemberContext {
 		})
 	}
 	return members
+}
+
+// memberSpecChanged returns true only when the member has been observed
+// before AND its source-level spec hash now differs from the recorded one.
+// A missing stored hash (brand-new member, or pre-upgrade state) returns
+// false: "SpecChanged" is reserved for "the user edited this member's
+// spec", not "we haven't seen this one yet". Initial container creation
+// is handled by the StatusNotFound branch in ReconcileMemberContainer
+// independently of SpecChanged, so returning false here is safe and avoids
+// a transient race: between the first reconcile that creates the container
+// and the second reconcile that observes it Running/Starting, the Status
+// patch carrying the fresh hash may not yet have propagated to the
+// informer cache — a stored-hash-empty-means-changed policy would Delete
+// the just-created container on that intervening pass.
+func memberSpecChanged(t *v1beta1.Team, role MemberRole, name string) bool {
+	stored := t.Status.MemberSpecHashes[name]
+	if stored == "" {
+		return false
+	}
+	return stored != hashMemberSourceSpec(t, role, name)
+}
+
+// hashMemberSourceSpec digests the user-authored fields that govern a
+// member's container. The decisive rule is: only fields the user explicitly
+// types into the Team CR count. Derived values — the team-wide peer list
+// inflated into ChannelPolicy.GroupAllowExtra, the admin Matrix ID
+// injections — are excluded. Concretely:
+//   - leader hash covers Team.Spec.Leader (the whole LeaderSpec, incl. its
+//     own ChannelPolicy) + team-level ChannelPolicy
+//   - worker hash covers the matching TeamWorkerSpec (incl. its own
+//     ChannelPolicy, Expose, MCPServers, Skills, Image, State, etc.) +
+//     team-level ChannelPolicy + PeerMentions toggle (flipping the toggle
+//     *does* rewrite every worker's policy, so it must be in the hash)
+//
+// Returning "" on marshal error is safe: memberSpecChanged treats an empty
+// stored hash as "changed", and an empty current hash as not-equal to any
+// non-empty stored hash, so either direction errs on the side of recreation.
+func hashMemberSourceSpec(t *v1beta1.Team, role MemberRole, name string) string {
+	type leaderInput struct {
+		Leader     v1beta1.LeaderSpec          `json:"leader"`
+		TeamPolicy *v1beta1.ChannelPolicySpec  `json:"teamPolicy,omitempty"`
+	}
+	type workerInput struct {
+		Worker       v1beta1.TeamWorkerSpec     `json:"worker"`
+		TeamPolicy   *v1beta1.ChannelPolicySpec `json:"teamPolicy,omitempty"`
+		PeerMentions *bool                      `json:"peerMentions,omitempty"`
+	}
+	var payload any
+	switch role {
+	case RoleTeamLeader:
+		payload = leaderInput{Leader: t.Spec.Leader, TeamPolicy: t.Spec.ChannelPolicy}
+	case RoleTeamWorker:
+		var ws v1beta1.TeamWorkerSpec
+		found := false
+		for _, w := range t.Spec.Workers {
+			if w.Name == name {
+				ws = w
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ""
+		}
+		payload = workerInput{
+			Worker:       ws,
+			TeamPolicy:   t.Spec.ChannelPolicy,
+			PeerMentions: t.Spec.PeerMentions,
+		}
+	default:
+		return ""
+	}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	h := fnv.New64a()
+	_, _ = h.Write(buf)
+	return fmt.Sprintf("%x", h.Sum64())
 }
 
 // leaderWorkerSpec projects a LeaderSpec into WorkerSpec with merged channel

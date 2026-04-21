@@ -339,6 +339,103 @@ func TestTeamFinalizer_AddedOnCreate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Team — update: add a worker must not recreate existing members
+// ---------------------------------------------------------------------------
+
+// TestTeamUpdate_AddWorker_DoesNotRecreateExisting is the regression guard
+// for the per-member spec-change-detection bug: previously the reconciler
+// compared Team.Generation against MemberContext.ObservedGeneration, which
+// was always 0 for team members, so every reconcile tore down every pod.
+//
+// Expected behaviour: adding a worker to the Team spec creates the new
+// worker's container and leaves all previously-provisioned member containers
+// untouched (no Delete, no new Create for existing members).
+func TestTeamUpdate_AddWorker_DoesNotRecreateExisting(t *testing.T) {
+	resetMocks()
+
+	name := fixtures.UniqueName("t-addw")
+	leader := name + "-lead"
+	existing := name + "-w1"
+	added := name + "-w2"
+
+	team := fixtures.NewTestTeam(name, leader, existing)
+	if err := k8sClient.Create(ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	t.Cleanup(func() { _ = deleteAndWait(t, team) })
+
+	waitForTeamPhase(t, team, "Active")
+
+	// Baseline: one Create per member on the first convergence.
+	creates, deletes, _, _, _ := mockBackend.CallSnapshot()
+	if len(creates) < 2 {
+		t.Fatalf("baseline creates=%v, want >=2 (leader + existing)", creates)
+	}
+	if len(deletes) != 0 {
+		t.Fatalf("baseline deletes=%v, want 0", deletes)
+	}
+
+	mockBackend.ClearCalls()
+	mockProv.ClearCalls()
+	mockDeploy.ClearCalls()
+
+	updateTeamSpec(t, team, func(tt *v1beta1.Team) {
+		tt.Spec.Workers = append(tt.Spec.Workers, v1beta1.TeamWorkerSpec{
+			Name:  added,
+			Model: "gpt-4o",
+		})
+	})
+
+	// Wait until the new worker is observed & team is Active again.
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		if got.Status.TotalWorkers != 2 {
+			return fmt.Errorf("TotalWorkers=%d, want 2", got.Status.TotalWorkers)
+		}
+		observed := make(map[string]bool)
+		for _, n := range got.Status.ObservedMembers {
+			observed[n] = true
+		}
+		if !observed[added] {
+			return fmt.Errorf("observed missing %q: %v", added, got.Status.ObservedMembers)
+		}
+		if got.Status.Phase != "Active" {
+			return fmt.Errorf("phase=%q, want Active", got.Status.Phase)
+		}
+		return nil
+	})
+
+	// MemberSpecHashes must be populated for every member — proves the
+	// per-member hash path was taken rather than the fallback "always
+	// changed" path.
+	var got v1beta1.Team
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+		t.Fatalf("get team: %v", err)
+	}
+	for _, n := range []string{leader, existing, added} {
+		if got.Status.MemberSpecHashes[n] == "" {
+			t.Errorf("MemberSpecHashes[%q] is empty, want non-empty", n)
+		}
+	}
+
+	// The critical assertion: existing leader/worker must not be recreated.
+	// Only the new worker is allowed in the post-update Create set, and no
+	// Deletes are allowed at all.
+	creates, deletes, _, _, _ = mockBackend.CallSnapshot()
+	for _, c := range creates {
+		if c != added {
+			t.Errorf("backend.Create called for existing member %q after spec update; creates=%v", c, creates)
+		}
+	}
+	if len(deletes) != 0 {
+		t.Errorf("backend.Delete called after non-destructive spec update: %v", deletes)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Team — helpers
 // ---------------------------------------------------------------------------
 
