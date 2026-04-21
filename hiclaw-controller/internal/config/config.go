@@ -70,6 +70,13 @@ type Config struct {
 	K8sManagerCPU           string
 	K8sManagerMemory        string
 
+	// DefaultWorkerRuntime is applied by the Worker reconciler when a Worker
+	// CR has spec.runtime unset, before falling back to "openclaw". Sourced
+	// from HICLAW_DEFAULT_WORKER_RUNTIME at install time. Manager pods use
+	// ManagerRuntime instead, since Backend.Create is shared between both
+	// and only the caller knows which env var applies.
+	DefaultWorkerRuntime string
+
 	// Controller URL (advertised to workers for STS refresh etc.)
 	ControllerURL string
 
@@ -115,6 +122,7 @@ type Config struct {
 	CMSLicenseKey     string
 	CMSProject        string
 	CMSWorkspace      string
+	CMSServiceName    string
 
 	// Pre-resolved worker environment defaults (passed to worker containers)
 	WorkerEnv WorkerEnvDefaults
@@ -132,6 +140,18 @@ type WorkerEnvDefaults struct {
 	MatrixURL     string
 	AdminUser     string
 	Runtime       string // "docker" for embedded, "k8s" for incluster
+	YoloMode      bool   // HICLAW_YOLO=1 — propagated to managers and workers
+	MatrixDebug   bool   // HICLAW_MATRIX_DEBUG=1 — propagated to managers and workers,
+	// translated to OPENCLAW_MATRIX_DEBUG=1 by the container entrypoints to
+	// enable structured INFO-level traces in the openclaw matrix plugin.
+
+	// CMS observability (propagated to all workers and managers)
+	CMSTracesEnabled  bool
+	CMSMetricsEnabled bool
+	CMSEndpoint       string
+	CMSLicenseKey     string
+	CMSProject        string
+	CMSWorkspace      string
 }
 
 type managerSpecEnv struct {
@@ -202,6 +222,7 @@ func LoadConfig() *Config {
 		ManagerModel:            firstNonEmpty(os.Getenv("HICLAW_MANAGER_MODEL"), envOrDefault("HICLAW_DEFAULT_MODEL", "qwen3.5-plus")),
 		ManagerRuntime:          envOrDefault("HICLAW_MANAGER_RUNTIME", "openclaw"),
 		ManagerImage:            os.Getenv("HICLAW_MANAGER_IMAGE"),
+		DefaultWorkerRuntime:    os.Getenv("HICLAW_DEFAULT_WORKER_RUNTIME"),
 		K8sManagerCPURequest:    envOrDefault("HICLAW_K8S_MANAGER_CPU_REQUEST", "500m"),
 		K8sManagerMemoryRequest: envOrDefault("HICLAW_K8S_MANAGER_MEMORY_REQUEST", "1Gi"),
 		K8sManagerCPU:           envOrDefault("HICLAW_K8S_MANAGER_CPU", "2"),
@@ -241,6 +262,7 @@ func LoadConfig() *Config {
 		CMSLicenseKey:     os.Getenv("HICLAW_CMS_LICENSE_KEY"),
 		CMSProject:        os.Getenv("HICLAW_CMS_PROJECT"),
 		CMSWorkspace:      os.Getenv("HICLAW_CMS_WORKSPACE"),
+		CMSServiceName:    envOrDefault("HICLAW_CMS_SERVICE_NAME", "hiclaw-manager"),
 
 		WorkerEnv: WorkerEnvDefaults{
 			MatrixDomain:  envOrDefault("HICLAW_MATRIX_DOMAIN", "matrix-local.hiclaw.io:8080"),
@@ -251,6 +273,16 @@ func LoadConfig() *Config {
 			AIGatewayURL:  envOrDefault("HICLAW_AI_GATEWAY_URL", "http://aigw-local.hiclaw.io:8080"),
 			MatrixURL:     envOrDefault("HICLAW_MATRIX_URL", "http://matrix-local.hiclaw.io:8080"),
 			AdminUser:     envOrDefault("HICLAW_ADMIN_USER", "admin"),
+			YoloMode:      envBool("HICLAW_YOLO"),
+			MatrixDebug:   envBool("HICLAW_MATRIX_DEBUG"),
+
+			// CMS observability (propagated from controller env to all workers/managers)
+			CMSTracesEnabled:  envBool("HICLAW_CMS_TRACES_ENABLED"),
+			CMSMetricsEnabled: envBool("HICLAW_CMS_METRICS_ENABLED"),
+			CMSEndpoint:       os.Getenv("HICLAW_CMS_ENDPOINT"),
+			CMSLicenseKey:     os.Getenv("HICLAW_CMS_LICENSE_KEY"),
+			CMSProject:        os.Getenv("HICLAW_CMS_PROJECT"),
+			CMSWorkspace:      os.Getenv("HICLAW_CMS_WORKSPACE"),
 		},
 	}
 
@@ -458,16 +490,12 @@ func (c *Config) MatrixConfig() matrix.Config {
 }
 
 func (c *Config) GatewayConfig() gateway.Config {
-	cfg := gateway.Config{
+	return gateway.Config{
 		ConsoleURL:                c.HigressBaseURL,
 		AdminUser:                 c.HigressAdminUser,
 		AdminPassword:             c.HigressAdminPassword,
 		AllowDefaultAdminFallback: c.KubeMode == "embedded",
 	}
-	if c.KubeMode == "embedded" {
-		cfg.PilotURL = "http://127.0.0.1:15014"
-	}
-	return cfg
 }
 
 func (c *Config) OSSConfig() oss.Config {
@@ -514,6 +542,9 @@ func (c *Config) ManagerAgentEnv() map[string]string {
 	if c.MatrixE2EE {
 		env["HICLAW_MATRIX_E2EE"] = "1"
 	}
+	if c.WorkerEnv.MatrixDebug {
+		env["HICLAW_MATRIX_DEBUG"] = "1"
+	}
 	if c.CMSTracesEnabled {
 		env["HICLAW_CMS_TRACES_ENABLED"] = "1"
 	}
@@ -524,6 +555,7 @@ func (c *Config) ManagerAgentEnv() map[string]string {
 	setIfNonEmpty("HICLAW_CMS_LICENSE_KEY", c.CMSLicenseKey)
 	setIfNonEmpty("HICLAW_CMS_PROJECT", c.CMSProject)
 	setIfNonEmpty("HICLAW_CMS_WORKSPACE", c.CMSWorkspace)
+	setIfNonEmpty("HICLAW_CMS_SERVICE_NAME", c.CMSServiceName)
 	return env
 }
 
@@ -557,5 +589,6 @@ func (c *Config) AgentConfig() agentconfig.Config {
 		CMSLicenseKey:      c.CMSLicenseKey,
 		CMSProject:         c.CMSProject,
 		CMSWorkspace:       c.CMSWorkspace,
+		CMSServiceName:     c.CMSServiceName,
 	}
 }

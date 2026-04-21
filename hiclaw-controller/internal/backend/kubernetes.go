@@ -109,6 +109,14 @@ func (k *K8sBackend) Available(_ context.Context) bool {
 }
 
 func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResult, error) {
+	// Resolve effective runtime once: explicit > caller fallback > openclaw.
+	// See ResolveRuntime godoc — the Worker / Manager CRDs intentionally have
+	// no schema-level default, so the only place the operator-side env var can
+	// take effect is here, via the caller-provided RuntimeFallback (which the
+	// reconciler picks per-resource: HICLAW_MANAGER_RUNTIME for managers,
+	// HICLAW_DEFAULT_WORKER_RUNTIME for workers).
+	req.Runtime = ResolveRuntime(req.Runtime, req.RuntimeFallback)
+
 	podName := req.ContainerName
 	if podName == "" {
 		podName = k.podName(req.NamePrefix, req.Name)
