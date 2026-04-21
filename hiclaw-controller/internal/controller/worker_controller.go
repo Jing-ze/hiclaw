@@ -100,10 +100,11 @@ func (r *WorkerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 // team leaders are handled by TeamReconciler.
 func (r *WorkerReconciler) reconcileNormal(ctx context.Context, w *v1beta1.Worker) (reconcile.Result, error) {
 	deps := MemberDeps{
-		Provisioner: r.Provisioner,
-		Deployer:    r.Deployer,
-		Backend:     r.Backend,
-		EnvBuilder:  r.EnvBuilder,
+		Provisioner:    r.Provisioner,
+		Deployer:       r.Deployer,
+		Backend:        r.Backend,
+		EnvBuilder:     r.EnvBuilder,
+		DefaultRuntime: r.DefaultRuntime,
 	}
 	mctx := workerMemberContext(w)
 	state := &MemberState{}
@@ -147,10 +148,11 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, w *v1beta1.Worke
 	logger.Info("deleting worker", "name", w.Name)
 
 	deps := MemberDeps{
-		Provisioner: r.Provisioner,
-		Deployer:    r.Deployer,
-		Backend:     r.Backend,
-		EnvBuilder:  r.EnvBuilder,
+		Provisioner:    r.Provisioner,
+		Deployer:       r.Deployer,
+		Backend:        r.Backend,
+		EnvBuilder:     r.EnvBuilder,
+		DefaultRuntime: r.DefaultRuntime,
 	}
 	mctx := workerMemberContext(w)
 

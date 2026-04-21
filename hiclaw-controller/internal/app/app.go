@@ -322,13 +322,14 @@ func (a *App) initReconcilers(_ context.Context) error {
 	}
 
 	if err := (&controller.TeamReconciler{
-		Client:      a.mgr.GetClient(),
-		Provisioner: a.provisioner,
-		Deployer:    a.deployer,
-		Backend:     a.registry,
-		EnvBuilder:  a.envBuilder,
-		Legacy:      a.legacy,
-		AgentFSDir:  a.cfg.AgentFSDir(),
+		Client:         a.mgr.GetClient(),
+		Provisioner:    a.provisioner,
+		Deployer:       a.deployer,
+		Backend:        a.registry,
+		EnvBuilder:     a.envBuilder,
+		Legacy:         a.legacy,
+		DefaultRuntime: a.cfg.DefaultWorkerRuntime,
+		AgentFSDir:     a.cfg.AgentFSDir(),
 	}).SetupWithManager(a.mgr); err != nil {
 		return fmt.Errorf("setup TeamReconciler: %w", err)
 	}

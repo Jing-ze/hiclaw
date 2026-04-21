@@ -44,6 +44,15 @@ type TeamReconciler struct {
 	EnvBuilder  service.WorkerEnvBuilderI
 	Legacy      *service.LegacyCompat // nil in incluster mode
 
+	// DefaultRuntime is forwarded into MemberDeps.DefaultRuntime for every
+	// team member this reconciler converges. Sourced from
+	// HICLAW_DEFAULT_WORKER_RUNTIME (Config.DefaultWorkerRuntime) — NOT from
+	// HICLAW_MANAGER_RUNTIME — because team leader and worker containers are
+	// both created through backend.WorkerBackend.Create as worker-type pods.
+	// Empty means "no operator preference"; backend.ResolveRuntime then falls
+	// back to RuntimeOpenClaw.
+	DefaultRuntime string
+
 	AgentFSDir string // for writing inline configs to the local agent FS
 }
 
@@ -138,10 +147,11 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 		}
 	}
 	deps := MemberDeps{
-		Provisioner: r.Provisioner,
-		Deployer:    r.Deployer,
-		Backend:     r.Backend,
-		EnvBuilder:  r.EnvBuilder,
+		Provisioner:    r.Provisioner,
+		Deployer:       r.Deployer,
+		Backend:        r.Backend,
+		EnvBuilder:     r.EnvBuilder,
+		DefaultRuntime: r.DefaultRuntime,
 	}
 	for _, name := range staleNames {
 		staleCtx := MemberContext{
@@ -386,10 +396,11 @@ func (r *TeamReconciler) handleDelete(ctx context.Context, t *v1beta1.Team) erro
 	logger.Info("deleting team", "name", t.Name)
 
 	deps := MemberDeps{
-		Provisioner: r.Provisioner,
-		Deployer:    r.Deployer,
-		Backend:     r.Backend,
-		EnvBuilder:  r.EnvBuilder,
+		Provisioner:    r.Provisioner,
+		Deployer:       r.Deployer,
+		Backend:        r.Backend,
+		EnvBuilder:     r.EnvBuilder,
+		DefaultRuntime: r.DefaultRuntime,
 	}
 
 	// Union of ObservedMembers and desired members to guarantee cleanup even

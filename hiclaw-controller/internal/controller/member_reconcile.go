@@ -99,6 +99,18 @@ type MemberDeps struct {
 	Deployer    service.WorkerDeployer
 	Backend     *backend.Registry
 	EnvBuilder  service.WorkerEnvBuilderI
+
+	// DefaultRuntime is forwarded into backend.CreateRequest.RuntimeFallback
+	// by createMemberContainer when a member leaves spec.runtime empty.
+	// Populated by the owning reconciler (WorkerReconciler / TeamReconciler)
+	// from HICLAW_DEFAULT_WORKER_RUNTIME (Config.DefaultWorkerRuntime). An
+	// empty string means "no operator preference" — backend.ResolveRuntime
+	// will then fall back to RuntimeOpenClaw. ManagerReconciler uses its own
+	// DefaultRuntime field (sourced from HICLAW_MANAGER_RUNTIME) directly on
+	// backend.CreateRequest and does not go through MemberDeps, since
+	// Backend.Create is shared between Worker and Manager paths and only the
+	// caller knows which env var applies.
+	DefaultRuntime string
 }
 
 // ReconcileMemberInfra ensures Matrix account, Gateway consumer, MinIO user,
@@ -334,6 +346,7 @@ func createMemberContainer(ctx context.Context, d MemberDeps, m MemberContext, s
 		Name:               m.Name,
 		Image:              m.Spec.Image,
 		Runtime:            m.Spec.Runtime,
+		RuntimeFallback:    d.DefaultRuntime,
 		Env:                workerEnv,
 		ServiceAccountName: saName,
 		Labels:             labels,
