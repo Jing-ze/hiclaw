@@ -27,6 +27,7 @@ func (b *WorkerEnvBuilder) Build(workerName string, prov *WorkerProvisionResult)
 		"HICLAW_FS_SECRET_KEY":       prov.MinIOPassword,
 		"OPENCLAW_DISABLE_BONJOUR":   "1",
 		"OPENCLAW_MDNS_HOSTNAME":     "hiclaw-w-" + workerName,
+		"HICLAW_CONSOLE_PORT":       "8088",
 		"HOME":                       "/root/hiclaw-fs/agents/" + workerName,
 	}
 
@@ -91,5 +92,44 @@ func (b *WorkerEnvBuilder) applyClusterDefaults(env map[string]string) {
 		if v != "" {
 			env[k] = v
 		}
+	}
+
+	// YOLO mode: when the controller was started with HICLAW_YOLO=1, propagate
+	// it to every manager and worker container it provisions so the agent's
+	// auto-confirm path triggers reliably (otherwise an agent without this
+	// signal will block on confirmation prompts during integration tests).
+	if b.defaults.YoloMode {
+		env["HICLAW_YOLO"] = "1"
+	}
+
+	// Matrix-plugin trace logging: when the controller was started with
+	// HICLAW_MATRIX_DEBUG=1, propagate it to every manager + worker container.
+	// The container entrypoints translate it to OPENCLAW_MATRIX_DEBUG=1, which
+	// makes openclaw's matrix plugin emit structured INFO-level traces (sync
+	// state transitions, room.invite/join, message handler arrival + filter
+	// outcomes). Used to debug "worker never joined" / "manager never replied"
+	// hangs without rebuilding images.
+	if b.defaults.MatrixDebug {
+		env["HICLAW_MATRIX_DEBUG"] = "1"
+	}
+
+	// CMS observability configuration
+	if b.defaults.CMSTracesEnabled {
+		env["HICLAW_CMS_TRACES_ENABLED"] = "true"
+	}
+	if b.defaults.CMSMetricsEnabled {
+		env["HICLAW_CMS_METRICS_ENABLED"] = "true"
+	}
+	if b.defaults.CMSEndpoint != "" {
+		env["HICLAW_CMS_ENDPOINT"] = b.defaults.CMSEndpoint
+	}
+	if b.defaults.CMSLicenseKey != "" {
+		env["HICLAW_CMS_LICENSE_KEY"] = b.defaults.CMSLicenseKey
+	}
+	if b.defaults.CMSProject != "" {
+		env["HICLAW_CMS_PROJECT"] = b.defaults.CMSProject
+	}
+	if b.defaults.CMSWorkspace != "" {
+		env["HICLAW_CMS_WORKSPACE"] = b.defaults.CMSWorkspace
 	}
 }

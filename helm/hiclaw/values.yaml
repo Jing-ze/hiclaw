@@ -20,7 +20,6 @@ credentials:
   llmApiKey: ""               # LLM API key (required)
   llmProvider: "qwen"
   defaultModel: "qwen3.5-plus"
-  controllerApiKey: ""       # Controller auth key (auto-generated if empty)
 
 # ── Matrix ────────────────────────────────────────────────────────────────
 matrix:
@@ -185,6 +184,18 @@ elementWeb:
   service:
     type: ClusterIP
     port: 8080
+
+# ── CMS Observability (optional) ─────────────────────────────────────────
+# Alibaba Cloud CMS 2.0 (ARMS) integration.  Set cms.enabled=true and fill in
+# credentials to enable OTLP trace/metric export from Manager and all Workers.
+cms:
+  enabled: false
+  endpoint: ""
+  licenseKey: ""
+  project: ""
+  workspace: ""
+  serviceName: "hiclaw-manager"    # Manager service name; Workers auto-derive "hiclaw-worker-<name>"
+  metricsEnabled: false
 
 # ── Worker defaults ───────────────────────────────────────────────────────
 worker:
