@@ -153,6 +153,12 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 		EnvBuilder:     r.EnvBuilder,
 		DefaultRuntime: r.DefaultRuntime,
 	}
+	// staleCtx.Spec is intentionally left zero. The original TeamWorkerSpec
+	// has already been removed from t.Spec.Workers, and we never persisted a
+	// per-member snapshot. ReconcileMemberDelete -> DeprovisionWorker ->
+	// DeleteConsumer relies on the consumer key (derived from Name) to cascade
+	// removal of all authorizations attached to this worker (including MCP
+	// server grants), so not forwarding Spec.McpServers is acceptable.
 	for _, name := range staleNames {
 		staleCtx := MemberContext{
 			Name:                name,
@@ -170,13 +176,21 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 
 	// --- Step 4: Reconcile each desired member (leader first) ---
 	//
-	// observedSet tracks which members have successfully completed at least one
-	// reconcile pass. A member is considered "observed" iff infra provisioning
-	// succeeded at some point (this pass or a prior one). A transient error on
-	// an already-observed member does NOT drop it from the set, so subsequent
-	// reconciles keep using Refresh. But a member whose first Provision fails
-	// stays out of the set, ensuring the next reconcile retries Provision
-	// (mirrors the WorkerReconciler semantics driven by Status.MatrixUserID).
+	// observedSet tracks members whose infra provisioning has succeeded at
+	// least once. Membership flips to "observed" the moment
+	// ReconcileMemberInfra returns nil — a failure in a later phase
+	// (Config/Container/Expose) does NOT revoke observed status, because
+	// infra success means the Matrix user already exists and its access
+	// token has been persisted. Dropping such a member from the set would
+	// force the next reconcile down the Provision path (IsUpdate=false),
+	// which re-invokes matrix.EnsureUser's Login fallback and mints a new
+	// access token — a rotation that triggers an openclaw gateway restart.
+	// Only a member whose very first ReconcileMemberInfra fails stays out
+	// of the set, mirroring WorkerReconciler's Status.MatrixUserID check.
+	//
+	// specHashes, in contrast, is updated only when ALL phases succeed, so
+	// a partial failure keeps memberSpecChanged=true and retries container
+	// recreation on the next pass.
 	observedSet := make(map[string]struct{}, len(t.Status.ObservedMembers))
 	for _, n := range t.Status.ObservedMembers {
 		if _, keep := desiredNames[n]; keep {
@@ -202,15 +216,15 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 		if existing, ok := workerExposed[m.Name]; ok {
 			m.CurrentExposedPorts = existing
 		}
-		if err := r.reconcileMember(ctx, deps, m, workerExposed); err != nil {
+		if err := r.reconcileMember(ctx, deps, m, workerExposed, observedSet); err != nil {
 			logger.Error(err, "team member reconcile failed", "name", m.Name)
 			perMemberErrors = append(perMemberErrors, fmt.Sprintf("%s: %v", m.Name, err))
 			continue
 		}
-		observedSet[m.Name] = struct{}{}
-		// Record the hash only after a successful reconcile so a failed
+		// Record the hash only after a full reconcile success so a failed
 		// mid-phase attempt on the next pass still sees SpecChanged=true
-		// and retries the container recreation.
+		// and retries the container recreation. observedSet was already
+		// updated inside reconcileMember as soon as infra succeeded.
 		specHashes[m.Name] = hashMemberSourceSpec(t, m.Role, m.Name)
 	}
 
@@ -305,7 +319,11 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 // reconcileMember runs the shared member phases for one team member and
 // accumulates exposed-port state into workerExposed. Leader membership in
 // workerExposed is skipped because the leader never exposes gateway ports.
-func (r *TeamReconciler) reconcileMember(ctx context.Context, deps MemberDeps, m MemberContext, workerExposed map[string][]v1beta1.ExposedPortStatus) error {
+//
+// observedSet is updated the instant ReconcileMemberInfra succeeds — see the
+// Step 4 comment in reconcileTeamNormal for why post-infra failures must not
+// revoke observed status (token-rotation hazard).
+func (r *TeamReconciler) reconcileMember(ctx context.Context, deps MemberDeps, m MemberContext, workerExposed map[string][]v1beta1.ExposedPortStatus, observedSet map[string]struct{}) error {
 	state := &MemberState{}
 
 	// Pre-populate ExistingMatrixUserID when we've already provisioned the
@@ -317,6 +335,7 @@ func (r *TeamReconciler) reconcileMember(ctx context.Context, deps MemberDeps, m
 	if _, err := ReconcileMemberInfra(ctx, deps, m, state); err != nil {
 		return err
 	}
+	observedSet[m.Name] = struct{}{}
 	if err := EnsureMemberServiceAccount(ctx, deps, m); err != nil {
 		return err
 	}
@@ -433,6 +452,11 @@ func (r *TeamReconciler) handleDelete(ctx context.Context, t *v1beta1.Team) erro
 		if role == RoleTeamLeader {
 			mctx.Spec = leaderWorkerSpec(t)
 		} else {
+			// For "observed but no longer in Spec.Workers" entries (stale),
+			// the inner loop finds no match and mctx.Spec stays zero. The
+			// same rationale as the stale cleanup in reconcileTeamNormal
+			// applies: DeleteConsumer cascades MCP authorization removal by
+			// consumer key, so losing Spec.McpServers here is acceptable.
 			for _, w := range t.Spec.Workers {
 				if w.Name == name {
 					mctx.Spec = teamWorkerSpecToWorkerSpec(t, w)
@@ -571,6 +595,26 @@ func memberSpecChanged(t *v1beta1.Team, role MemberRole, name string) bool {
 // Returning "" on marshal error is safe: memberSpecChanged treats an empty
 // stored hash as "changed", and an empty current hash as not-equal to any
 // non-empty stored hash, so either direction errs on the side of recreation.
+//
+// Stability contract for LeaderSpec / TeamWorkerSpec evolution:
+//
+// Because the payload embeds the whole LeaderSpec / TeamWorkerSpec, adding a
+// field to either struct without a json:",omitempty" tag will introduce a new
+// key in every marshaled payload — even when the user never sets that field.
+// All existing Teams' MemberSpecHashes would then diverge from the stored
+// value on the first reconcile after upgrade, triggering container recreation
+// for every member of every Team simultaneously.
+//
+// To preserve hash stability, every new field on LeaderSpec or
+// TeamWorkerSpec MUST:
+//  1. carry a json:",omitempty" tag, AND
+//  2. have a zero value that is semantically equivalent to the old
+//     (pre-field) behavior.
+//
+// This is a load-bearing invariant, not a style suggestion. If a future
+// field genuinely needs to cause recreation, that migration should be
+// explicit (e.g. bump a dedicated schema version) rather than implicit via
+// JSON key churn.
 func hashMemberSourceSpec(t *v1beta1.Team, role MemberRole, name string) string {
 	type leaderInput struct {
 		Leader     v1beta1.LeaderSpec          `json:"leader"`

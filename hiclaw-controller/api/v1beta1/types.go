@@ -164,6 +164,10 @@ type TeamStatus struct {
 	// A member that fails ReconcileMemberInfra stays out of the set so the
 	// next reconcile retries Provision instead of silently succeeding via
 	// Refresh — mirroring WorkerReconciler's Status.MatrixUserID semantics.
+	// Failures in the post-infra phases (Config/Container/Expose) do NOT
+	// remove a member from this set: the Matrix user already exists and its
+	// access token has been persisted, so a subsequent Provision attempt
+	// would rotate the token and trigger an openclaw gateway restart.
 	ObservedMembers []string `json:"observedMembers,omitempty"`
 	// MemberSpecHashes records, per member, the hash of the WorkerSpec at
 	// which the member's container was last successfully provisioned.
