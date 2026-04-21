@@ -95,6 +95,15 @@ func (d *DockerBackend) Create(ctx context.Context, req CreateRequest) (*WorkerR
 		containerName = prefix + req.Name
 	}
 
+	// Resolve effective runtime once: explicit > caller fallback > openclaw.
+	// We do this before image fallback so all runtime-dependent decisions
+	// (image, working dir, labels) see a consistent normalized value. The
+	// CRD intentionally does not pin a default — see ResolveRuntime godoc.
+	// Caller (worker / manager reconciler) is responsible for picking the
+	// right env var for RuntimeFallback (HICLAW_DEFAULT_WORKER_RUNTIME for
+	// workers, HICLAW_MANAGER_RUNTIME for managers).
+	req.Runtime = ResolveRuntime(req.Runtime, req.RuntimeFallback)
+
 	// Default image fallback
 	image := req.Image
 	if image == "" {
