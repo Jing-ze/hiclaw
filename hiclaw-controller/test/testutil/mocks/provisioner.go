@@ -23,20 +23,24 @@ type MockProvisioner struct {
 	RequestSATokenFn       func(ctx context.Context, workerName string) (string, error)
 	DeactivateMatrixUserFn func(ctx context.Context, workerName string) error
 	MatrixUserIDFn         func(name string) string
-	ProvisionTeamRoomsFn   func(ctx context.Context, req service.TeamRoomRequest) (*service.TeamRoomResult, error)
+	ProvisionTeamRoomsFn    func(ctx context.Context, req service.TeamRoomRequest) (*service.TeamRoomResult, error)
+	DeleteTeamRoomAliasesFn func(ctx context.Context, teamName, leaderName string) error
+	DeleteWorkerRoomAliasFn func(ctx context.Context, workerName string) error
 
 	Calls struct {
-		ProvisionWorker      []service.WorkerProvisionRequest
-		DeprovisionWorker    []service.WorkerDeprovisionRequest
-		RefreshCredentials   []string
-		ReconcileMCPAuth     []string
-		ReconcileExpose      []string
-		EnsureServiceAccount []string
-		DeleteServiceAccount []string
-		DeleteCredentials    []string
-		RequestSAToken       []string
-		DeactivateMatrixUser []string
-		ProvisionTeamRooms   []service.TeamRoomRequest
+		ProvisionWorker       []service.WorkerProvisionRequest
+		DeprovisionWorker     []service.WorkerDeprovisionRequest
+		RefreshCredentials    []string
+		ReconcileMCPAuth      []string
+		ReconcileExpose       []string
+		EnsureServiceAccount  []string
+		DeleteServiceAccount  []string
+		DeleteCredentials     []string
+		RequestSAToken        []string
+		DeactivateMatrixUser  []string
+		ProvisionTeamRooms    []service.TeamRoomRequest
+		DeleteTeamRoomAliases []string
+		DeleteWorkerRoomAlias []string
 	}
 }
 
@@ -61,6 +65,8 @@ func (m *MockProvisioner) Reset() {
 	m.DeactivateMatrixUserFn = nil
 	m.MatrixUserIDFn = nil
 	m.ProvisionTeamRoomsFn = nil
+	m.DeleteTeamRoomAliasesFn = nil
+	m.DeleteWorkerRoomAliasFn = nil
 }
 
 // ClearCalls resets call records only, preserving Fn overrides.
@@ -72,17 +78,19 @@ func (m *MockProvisioner) ClearCalls() {
 
 func (m *MockProvisioner) clearCallsLocked() {
 	m.Calls = struct {
-		ProvisionWorker      []service.WorkerProvisionRequest
-		DeprovisionWorker    []service.WorkerDeprovisionRequest
-		RefreshCredentials   []string
-		ReconcileMCPAuth     []string
-		ReconcileExpose      []string
-		EnsureServiceAccount []string
-		DeleteServiceAccount []string
-		DeleteCredentials    []string
-		RequestSAToken       []string
-		DeactivateMatrixUser []string
-		ProvisionTeamRooms   []service.TeamRoomRequest
+		ProvisionWorker       []service.WorkerProvisionRequest
+		DeprovisionWorker     []service.WorkerDeprovisionRequest
+		RefreshCredentials    []string
+		ReconcileMCPAuth      []string
+		ReconcileExpose       []string
+		EnsureServiceAccount  []string
+		DeleteServiceAccount  []string
+		DeleteCredentials     []string
+		RequestSAToken        []string
+		DeactivateMatrixUser  []string
+		ProvisionTeamRooms    []service.TeamRoomRequest
+		DeleteTeamRoomAliases []string
+		DeleteWorkerRoomAlias []string
 	}{}
 }
 
@@ -227,6 +235,28 @@ func (m *MockProvisioner) ProvisionTeamRooms(ctx context.Context, req service.Te
 		TeamRoomID:     "!team-" + req.TeamName + ":localhost",
 		LeaderDMRoomID: "!leader-dm-" + req.TeamName + ":localhost",
 	}, nil
+}
+
+func (m *MockProvisioner) DeleteTeamRoomAliases(ctx context.Context, teamName, leaderName string) error {
+	m.mu.Lock()
+	m.Calls.DeleteTeamRoomAliases = append(m.Calls.DeleteTeamRoomAliases, teamName+"/"+leaderName)
+	fn := m.DeleteTeamRoomAliasesFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, teamName, leaderName)
+	}
+	return nil
+}
+
+func (m *MockProvisioner) DeleteWorkerRoomAlias(ctx context.Context, workerName string) error {
+	m.mu.Lock()
+	m.Calls.DeleteWorkerRoomAlias = append(m.Calls.DeleteWorkerRoomAlias, workerName)
+	fn := m.DeleteWorkerRoomAliasFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, workerName)
+	}
+	return nil
 }
 
 // CallCounts returns a snapshot of call counts safe for concurrent use.

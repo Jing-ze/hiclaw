@@ -21,6 +21,8 @@ type WorkerProvisioner interface {
 	DeactivateMatrixUser(ctx context.Context, workerName string) error
 	MatrixUserID(name string) string
 	ProvisionTeamRooms(ctx context.Context, req TeamRoomRequest) (*TeamRoomResult, error)
+	DeleteTeamRoomAliases(ctx context.Context, teamName, leaderName string) error
+	DeleteWorkerRoomAlias(ctx context.Context, workerName string) error
 }
 
 // WorkerDeployer defines the deployment operations used by WorkerReconciler
@@ -59,6 +61,7 @@ type ManagerProvisioner interface {
 	DeleteCredentials(ctx context.Context, name string) error
 	RequestManagerSAToken(ctx context.Context, managerName string) (string, error)
 	DeactivateMatrixUser(ctx context.Context, name string) error
+	DeleteManagerRoomAlias(ctx context.Context, managerName string) error
 }
 
 // ManagerDeployer defines the deployment operations used by ManagerReconciler.

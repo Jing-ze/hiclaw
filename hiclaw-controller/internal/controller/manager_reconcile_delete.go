@@ -42,6 +42,13 @@ func (r *ManagerReconciler) reconcileManagerDelete(ctx context.Context, s *manag
 		logger.Error(err, "failed to delete ServiceAccount (non-fatal)")
 	}
 
+	// Release the Matrix alias that tied this Manager to its Admin DM room.
+	// The room is preserved; only the controller's stable identifier is
+	// released so a future Manager CR with the same name can reclaim it.
+	if err := r.Provisioner.DeleteManagerRoomAlias(ctx, managerName); err != nil {
+		logger.Error(err, "failed to delete manager room alias (non-fatal)")
+	}
+
 	controllerutil.RemoveFinalizer(m, finalizerName)
 	if err := r.Update(ctx, m); err != nil {
 		return reconcile.Result{}, err

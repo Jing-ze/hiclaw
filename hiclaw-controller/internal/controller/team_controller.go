@@ -113,12 +113,10 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 
 	// --- Step 1: Team-level infrastructure ---
 	rooms, err := r.Provisioner.ProvisionTeamRooms(ctx, service.TeamRoomRequest{
-		TeamName:               t.Name,
-		LeaderName:             t.Spec.Leader.Name,
-		WorkerNames:            workerNames,
-		AdminSpec:              t.Spec.Admin,
-		ExistingRoomID:         t.Status.TeamRoomID,
-		ExistingLeaderDMRoomID: t.Status.LeaderDMRoomID,
+		TeamName:    t.Name,
+		LeaderName:  t.Spec.Leader.Name,
+		WorkerNames: workerNames,
+		AdminSpec:   t.Spec.Admin,
 	})
 	if err != nil {
 		return r.failTeam(ctx, t, patchBase, fmt.Sprintf("provision team rooms: %v", err))
@@ -481,6 +479,15 @@ func (r *TeamReconciler) handleDelete(ctx context.Context, t *v1beta1.Team) erro
 		if err := r.Legacy.RemoveFromTeamsRegistry(ctx, t.Name); err != nil {
 			logger.Error(err, "failed to remove team from registry (non-fatal)")
 		}
+	}
+
+	// Release the Matrix aliases that tied this Team to its rooms. The rooms
+	// themselves are preserved (they still hold chat history and members can
+	// leave on their own schedule), but a fresh Team CR with the same name
+	// must get a clean alias so CreateRoom resolves a new room instead of
+	// reattaching to the old one.
+	if err := r.Provisioner.DeleteTeamRoomAliases(ctx, t.Name, t.Spec.Leader.Name); err != nil {
+		logger.Error(err, "failed to delete team room aliases (non-fatal)")
 	}
 
 	if len(errs) > 0 {

@@ -70,8 +70,14 @@ type MemberContext struct {
 	// Matrix user; the Infra phase then uses RefreshCredentials instead of
 	// ProvisionWorker.
 	ExistingMatrixUserID string
-	ExistingRoomID       string
-	CurrentExposedPorts  []v1beta1.ExposedPortStatus
+	// ExistingRoomID is the last-observed RoomID from the owning CR's status.
+	// It is a read-through cache used by the refresh path to populate
+	// downstream env builders without a round-trip to the Matrix server;
+	// it is NOT used as an idempotency key (the room alias is — see
+	// service.Provisioner.ProvisionWorker). Safe to leave empty; the alias
+	// resolution in ProvisionWorker will populate RoomID on first run.
+	ExistingRoomID      string
+	CurrentExposedPorts []v1beta1.ExposedPortStatus
 
 	// PodLabels are merged into backend.CreateRequest.Labels. Used by Team
 	// members to tag pods with "hiclaw.io/team=<teamName>" so the Team
@@ -143,7 +149,6 @@ func ReconcileMemberInfra(ctx context.Context, d MemberDeps, m MemberContext, st
 		TeamName:       m.TeamName,
 		TeamLeaderName: m.TeamLeaderName,
 		McpServers:     m.Spec.McpServers,
-		ExistingRoomID: m.ExistingRoomID,
 	})
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("provision worker: %w", err)
@@ -425,6 +430,13 @@ func ReconcileMemberDelete(ctx context.Context, d MemberDeps, m MemberContext) e
 	}
 	if err := d.Provisioner.DeleteServiceAccount(ctx, m.Name); err != nil {
 		logger.Error(err, "failed to delete ServiceAccount (non-fatal)", "name", m.Name)
+	}
+	// Every worker (standalone, team leader, team worker) owns a per-worker
+	// comm room created by ProvisionWorker. Release its alias here so a
+	// future Worker/Team CR with the same name can reclaim it cleanly —
+	// the underlying room is left intact to preserve history.
+	if err := d.Provisioner.DeleteWorkerRoomAlias(ctx, m.Name); err != nil {
+		logger.Error(err, "failed to delete worker room alias (non-fatal)", "name", m.Name)
 	}
 	return nil
 }

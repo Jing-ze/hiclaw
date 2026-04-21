@@ -22,7 +22,6 @@ type WorkerProvisionRequest struct {
 	TeamName       string
 	TeamLeaderName string
 	McpServers     []string
-	ExistingRoomID string // for retry idempotency (from persisted creds)
 }
 
 // WorkerProvisionResult contains all outputs from a successful provision.
@@ -51,13 +50,6 @@ type TeamRoomRequest struct {
 	LeaderName  string
 	WorkerNames []string
 	AdminSpec   *v1beta1.TeamAdminSpec
-	// ExistingRoomID is the team group room ID from previous reconciles.
-	// If non-empty, the creation step is skipped and membership is
-	// reconciled against the existing room instead.
-	ExistingRoomID string
-	// ExistingLeaderDMRoomID is the leader DM room ID from previous
-	// reconciles. Same idempotency semantics as ExistingRoomID.
-	ExistingLeaderDMRoomID string
 }
 
 // TeamRoomResult contains the created room IDs.
@@ -136,6 +128,22 @@ func (p *Provisioner) MatrixUserID(name string) string {
 	return p.matrix.UserID(name)
 }
 
+// roomAliasLocalpart is the single source of truth for how controller-managed
+// rooms are named on the Matrix homeserver. The chosen shape
+// "hiclaw-<kind>-<name>" is deliberately verbose to avoid colliding with rooms
+// created manually or by unrelated tooling. Changing this format in place
+// would orphan every existing room — callers must instead introduce a new
+// kind and handle migration explicitly.
+func roomAliasLocalpart(kind, name string) string {
+	return "hiclaw-" + kind + "-" + name
+}
+
+// roomAliasFull builds the full "#localpart:domain" form used by
+// ResolveRoomAlias / DeleteRoomAlias.
+func (p *Provisioner) roomAliasFull(localpart string) string {
+	return "#" + localpart + ":" + p.matrixDomain
+}
+
 func (p *Provisioner) DeactivateMatrixUser(ctx context.Context, workerName string) error {
 	return p.matrix.DeactivateUser(ctx, workerName)
 }
@@ -165,11 +173,6 @@ func (p *Provisioner) ProvisionWorker(ctx context.Context, req WorkerProvisionRe
 		if err := p.creds.Save(ctx, workerName, creds); err != nil {
 			return nil, fmt.Errorf("save credentials: %w", err)
 		}
-	}
-
-	// Use persisted room ID for idempotent retry
-	if req.ExistingRoomID == "" {
-		req.ExistingRoomID = creds.RoomID
 	}
 
 	// Step 2: Register Matrix account
@@ -222,21 +225,33 @@ func (p *Provisioner) ProvisionWorker(ctx context.Context, req WorkerProvisionRe
 	}
 
 	roomInfo, err := p.matrix.CreateRoom(ctx, matrix.CreateRoomRequest{
-		Name:           fmt.Sprintf("Worker: %s", workerName),
-		Topic:          fmt.Sprintf("Communication channel for %s", workerName),
-		Invite:         []string{adminMatrixID, authorityID, workerMatrixID},
-		PowerLevels:    powerLevels,
-		ExistingRoomID: req.ExistingRoomID,
+		Name:          fmt.Sprintf("Worker: %s", workerName),
+		Topic:         fmt.Sprintf("Communication channel for %s", workerName),
+		Invite:        []string{adminMatrixID, authorityID, workerMatrixID},
+		PowerLevels:   powerLevels,
+		RoomAliasName: roomAliasLocalpart("worker", workerName),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Matrix room creation failed: %w", err)
 	}
-	creds.RoomID = roomInfo.RoomID
-	logger.Info("Matrix room ready", "roomID", creds.RoomID, "created", roomInfo.Created)
+	roomID := roomInfo.RoomID
+	logger.Info("Matrix room ready", "roomID", roomID, "created", roomInfo.Created)
 
-	// Persist credentials (including room ID) for retry idempotency
+	// Persist the freshly-registered Matrix token. Room identity is no
+	// longer stored here — the Matrix alias is the sole source of truth
+	// and is resolved via CreateRoom on every reconcile.
 	if err := p.creds.Save(ctx, workerName, creds); err != nil {
 		logger.Error(err, "failed to persist credentials (non-fatal)")
+	}
+
+	// When an existing alias was resolved, CreateRoom returned without
+	// sending fresh invites. Reconcile membership so late-added
+	// authorities (e.g. a team admin joining after initial provisioning)
+	// or recovered power levels are applied.
+	if !roomInfo.Created {
+		if err := p.ReconcileRoomMembership(ctx, roomID, []string{adminMatrixID, authorityID, workerMatrixID}); err != nil {
+			logger.Error(err, "failed to reconcile worker room membership (non-fatal)", "roomID", roomID)
+		}
 	}
 
 	// Step 5: Gateway consumer and authorization
@@ -271,7 +286,7 @@ func (p *Provisioner) ProvisionWorker(ctx context.Context, req WorkerProvisionRe
 	return &WorkerProvisionResult{
 		MatrixUserID:   workerMatrixID,
 		MatrixToken:    userCreds.AccessToken,
-		RoomID:         creds.RoomID,
+		RoomID:         roomID,
 		GatewayKey:     creds.GatewayKey,
 		MinIOPassword:  creds.MinIOPassword,
 		MatrixPassword: creds.MatrixPassword,
@@ -430,11 +445,13 @@ func (p *Provisioner) ReconcileMCPAuth(ctx context.Context, consumerName string,
 	return p.gateway.AuthorizeMCPServers(ctx, consumerName, mcpServers)
 }
 
-// ProvisionTeamRooms creates (or reuses) the team room and leader DM room
+// ProvisionTeamRooms creates (or resolves) the team room and leader DM room
 // and reconciles their Matrix memberships against the desired member set.
-// On subsequent reconciles (ExistingRoomID / ExistingLeaderDMRoomID set) it
-// skips room creation and only adjusts membership, so newly-added workers
-// are invited and removed workers are kicked.
+// Idempotency is guaranteed by the Matrix alias: repeated calls always land
+// on the same RoomID regardless of K8s informer cache state, so no
+// "existing room ID" inputs are threaded through. Membership is reconciled
+// unconditionally on every call so newly-added workers are invited and
+// removed workers are kicked.
 func (p *Provisioner) ProvisionTeamRooms(ctx context.Context, req TeamRoomRequest) (*TeamRoomResult, error) {
 	logger := log.FromContext(ctx)
 	managerMatrixID := p.matrix.UserID("manager")
@@ -453,24 +470,22 @@ func (p *Provisioner) ProvisionTeamRooms(ctx context.Context, req TeamRoomReques
 	}
 
 	teamRoom, err := p.matrix.CreateRoom(ctx, matrix.CreateRoomRequest{
-		Name:           fmt.Sprintf("Team: %s", req.TeamName),
-		Topic:          fmt.Sprintf("Team room for %s", req.TeamName),
-		Invite:         teamInvites,
-		PowerLevels:    teamPowerLevels,
-		ExistingRoomID: req.ExistingRoomID,
+		Name:          fmt.Sprintf("Team: %s", req.TeamName),
+		Topic:         fmt.Sprintf("Team room for %s", req.TeamName),
+		Invite:        teamInvites,
+		PowerLevels:   teamPowerLevels,
+		RoomAliasName: roomAliasLocalpart("team", req.TeamName),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("team room creation failed: %w", err)
 	}
 	logger.Info("team room ready", "roomID", teamRoom.RoomID, "created", teamRoom.Created)
 
-	// When the room already existed, CreateRoom short-circuited without
-	// sending invites. Reconcile membership explicitly so workers added to
-	// (or removed from) the Team after initial provisioning are synced.
-	if !teamRoom.Created {
-		if err := p.ReconcileRoomMembership(ctx, teamRoom.RoomID, teamInvites); err != nil {
-			return nil, fmt.Errorf("reconcile team room membership: %w", err)
-		}
+	// Reconcile unconditionally: on fresh creation the invite list already
+	// took effect and Reconcile is a no-op; on alias resolution it catches
+	// up members added/removed since the previous run.
+	if err := p.ReconcileRoomMembership(ctx, teamRoom.RoomID, teamInvites); err != nil {
+		return nil, fmt.Errorf("reconcile team room membership: %w", err)
 	}
 
 	// Leader DM Room: Leader + Admin (+ optional Team Admin)
@@ -479,21 +494,19 @@ func (p *Provisioner) ProvisionTeamRooms(ctx context.Context, req TeamRoomReques
 		leaderDMInvites = append(leaderDMInvites, req.AdminSpec.MatrixUserID)
 	}
 	leaderDMRoom, err := p.matrix.CreateRoom(ctx, matrix.CreateRoomRequest{
-		Name:           fmt.Sprintf("Leader DM: %s", req.LeaderName),
-		Topic:          fmt.Sprintf("DM channel for team leader %s", req.LeaderName),
-		Invite:         leaderDMInvites,
-		PowerLevels:    teamPowerLevels,
-		ExistingRoomID: req.ExistingLeaderDMRoomID,
+		Name:          fmt.Sprintf("Leader DM: %s", req.LeaderName),
+		Topic:         fmt.Sprintf("DM channel for team leader %s", req.LeaderName),
+		Invite:        leaderDMInvites,
+		PowerLevels:   teamPowerLevels,
+		RoomAliasName: roomAliasLocalpart("leader-dm", req.LeaderName),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("leader DM room creation failed: %w", err)
 	}
 	logger.Info("leader DM room ready", "roomID", leaderDMRoom.RoomID, "created", leaderDMRoom.Created)
 
-	if !leaderDMRoom.Created {
-		if err := p.ReconcileRoomMembership(ctx, leaderDMRoom.RoomID, leaderDMInvites); err != nil {
-			return nil, fmt.Errorf("reconcile leader DM membership: %w", err)
-		}
+	if err := p.ReconcileRoomMembership(ctx, leaderDMRoom.RoomID, leaderDMInvites); err != nil {
+		return nil, fmt.Errorf("reconcile leader DM membership: %w", err)
 	}
 
 	return &TeamRoomResult{
@@ -576,6 +589,49 @@ func (p *Provisioner) ReconcileRoomMembership(ctx context.Context, roomID string
 // DeleteCredentials removes persisted credentials for a worker.
 func (p *Provisioner) DeleteCredentials(ctx context.Context, workerName string) error {
 	return p.creds.Delete(ctx, workerName)
+}
+
+// DeleteTeamRoomAliases removes the room aliases that identify a team's group
+// room and the leader DM room so a future Team CR with the same name can
+// reclaim the aliases cleanly. Best-effort: alias removal does not affect
+// the underlying room, which is intentionally left intact to preserve chat
+// history; it only detaches the controller's stable identifier from it.
+func (p *Provisioner) DeleteTeamRoomAliases(ctx context.Context, teamName, leaderName string) error {
+	logger := log.FromContext(ctx)
+	teamAlias := p.roomAliasFull(roomAliasLocalpart("team", teamName))
+	if err := p.matrix.DeleteRoomAlias(ctx, teamAlias); err != nil {
+		logger.Error(err, "failed to delete team room alias (non-fatal)", "alias", teamAlias)
+	}
+	if leaderName != "" {
+		leaderAlias := p.roomAliasFull(roomAliasLocalpart("leader-dm", leaderName))
+		if err := p.matrix.DeleteRoomAlias(ctx, leaderAlias); err != nil {
+			logger.Error(err, "failed to delete leader DM alias (non-fatal)", "alias", leaderAlias)
+		}
+	}
+	return nil
+}
+
+// DeleteWorkerRoomAlias removes the alias that identifies a worker's comm
+// channel. Same semantics as DeleteTeamRoomAliases — the underlying room is
+// preserved, only the controller's handle to it is released.
+func (p *Provisioner) DeleteWorkerRoomAlias(ctx context.Context, workerName string) error {
+	logger := log.FromContext(ctx)
+	alias := p.roomAliasFull(roomAliasLocalpart("worker", workerName))
+	if err := p.matrix.DeleteRoomAlias(ctx, alias); err != nil {
+		logger.Error(err, "failed to delete worker room alias (non-fatal)", "alias", alias)
+	}
+	return nil
+}
+
+// DeleteManagerRoomAlias removes the alias for the Manager's Admin DM room.
+// Same preservation semantics as the worker/team variants.
+func (p *Provisioner) DeleteManagerRoomAlias(ctx context.Context, managerName string) error {
+	logger := log.FromContext(ctx)
+	alias := p.roomAliasFull(roomAliasLocalpart("manager", managerName))
+	if err := p.matrix.DeleteRoomAlias(ctx, alias); err != nil {
+		logger.Error(err, "failed to delete manager room alias (non-fatal)", "alias", alias)
+	}
+	return nil
 }
 
 // --- Manager Provisioning ---
@@ -668,18 +724,18 @@ func (p *Provisioner) ProvisionManager(ctx context.Context, req ManagerProvision
 		managerMatrixID: 100,
 	}
 	roomInfo, err := p.matrix.CreateRoom(ctx, matrix.CreateRoomRequest{
-		Name:           fmt.Sprintf("Manager: %s", managerName),
-		Topic:          fmt.Sprintf("Admin DM channel for Manager %s", managerName),
-		Invite:         []string{adminMatrixID, managerMatrixID},
-		PowerLevels:    powerLevels,
-		IsDirect:       true,
-		ExistingRoomID: creds.RoomID,
+		Name:          fmt.Sprintf("Manager: %s", managerName),
+		Topic:         fmt.Sprintf("Admin DM channel for Manager %s", managerName),
+		Invite:        []string{adminMatrixID, managerMatrixID},
+		PowerLevels:   powerLevels,
+		IsDirect:      true,
+		RoomAliasName: roomAliasLocalpart("manager", managerName),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Admin DM room creation failed: %w", err)
 	}
-	creds.RoomID = roomInfo.RoomID
-	logger.Info("Manager Admin DM room ready", "roomID", creds.RoomID, "created", roomInfo.Created)
+	roomID := roomInfo.RoomID
+	logger.Info("Manager Admin DM room ready", "roomID", roomID, "created", roomInfo.Created)
 
 	if err := p.creds.Save(ctx, managerName, creds); err != nil {
 		logger.Error(err, "failed to persist credentials (non-fatal)")
@@ -717,7 +773,7 @@ func (p *Provisioner) ProvisionManager(ctx context.Context, req ManagerProvision
 	return &ManagerProvisionResult{
 		MatrixUserID:   managerMatrixID,
 		MatrixToken:    userCreds.AccessToken,
-		RoomID:         creds.RoomID,
+		RoomID:         roomID,
 		GatewayKey:     creds.GatewayKey,
 		MinIOPassword:  creds.MinIOPassword,
 		MatrixPassword: creds.MatrixPassword,

@@ -22,6 +22,7 @@ type MockManagerProvisioner struct {
 	DeleteCredentialsFn          func(ctx context.Context, name string) error
 	RequestManagerSATokenFn      func(ctx context.Context, managerName string) (string, error)
 	DeactivateMatrixUserFn       func(ctx context.Context, name string) error
+	DeleteManagerRoomAliasFn     func(ctx context.Context, managerName string) error
 
 	Calls struct {
 		ProvisionManager           []service.ManagerProvisionRequest
@@ -35,6 +36,7 @@ type MockManagerProvisioner struct {
 		DeleteCredentials          []string
 		RequestManagerSAToken      []string
 		DeactivateMatrixUser       []string
+		DeleteManagerRoomAlias     []string
 	}
 }
 
@@ -57,6 +59,7 @@ func (m *MockManagerProvisioner) Reset() {
 	m.DeleteCredentialsFn = nil
 	m.RequestManagerSATokenFn = nil
 	m.DeactivateMatrixUserFn = nil
+	m.DeleteManagerRoomAliasFn = nil
 }
 
 func (m *MockManagerProvisioner) ClearCalls() {
@@ -78,6 +81,7 @@ func (m *MockManagerProvisioner) clearCallsLocked() {
 		DeleteCredentials          []string
 		RequestManagerSAToken      []string
 		DeactivateMatrixUser       []string
+		DeleteManagerRoomAlias     []string
 	}{}
 }
 
@@ -215,6 +219,17 @@ func (m *MockManagerProvisioner) DeactivateMatrixUser(ctx context.Context, name 
 	m.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, name)
+	}
+	return nil
+}
+
+func (m *MockManagerProvisioner) DeleteManagerRoomAlias(ctx context.Context, managerName string) error {
+	m.mu.Lock()
+	m.Calls.DeleteManagerRoomAlias = append(m.Calls.DeleteManagerRoomAlias, managerName)
+	fn := m.DeleteManagerRoomAliasFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, managerName)
 	}
 	return nil
 }

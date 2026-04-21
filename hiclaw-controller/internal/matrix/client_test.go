@@ -169,19 +169,178 @@ func TestCreateRoom(t *testing.T) {
 	}
 }
 
-func TestCreateRoom_ExistingRoomID(t *testing.T) {
-	c := NewTuwunelClient(Config{ServerURL: "http://unused", Domain: "d"}, nil)
+func TestCreateRoom_WithAlias(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_matrix/client/v3/createRoom" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["room_alias_name"] != "hiclaw-worker-alice" {
+			t.Errorf("room_alias_name = %v, want hiclaw-worker-alice", body["room_alias_name"])
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"room_id": "!new:test.domain"})
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{ServerURL: server.URL, Domain: "test.domain"}, server.Client())
 	info, err := c.CreateRoom(context.Background(), CreateRoomRequest{
-		ExistingRoomID: "!existing:domain",
+		Name:          "Worker: alice",
+		RoomAliasName: "hiclaw-worker-alice",
+		CreatorToken:  "tok",
+	})
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if !info.Created {
+		t.Error("expected Created=true for fresh alias")
+	}
+	if info.RoomID != "!new:test.domain" {
+		t.Errorf("RoomID = %q, want !new:test.domain", info.RoomID)
+	}
+}
+
+func TestCreateRoom_AliasInUse_ResolvesExisting(t *testing.T) {
+	var createCalls, resolveCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/createRoom":
+			createCalls++
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_ROOM_IN_USE",
+				"error":   "Room alias already exists.",
+			})
+		case "/_matrix/client/v3/directory/room/#hiclaw-worker-alice:test.domain":
+			resolveCalls++
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"room_id": "!existing:test.domain",
+				"servers": []string{"test.domain"},
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "test.domain",
+		AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+
+	info, err := c.CreateRoom(context.Background(), CreateRoomRequest{
+		Name:          "Worker: alice",
+		RoomAliasName: "hiclaw-worker-alice",
 	})
 	if err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
 	if info.Created {
-		t.Error("expected Created=false for existing room ID")
+		t.Error("expected Created=false when alias already claimed")
 	}
-	if info.RoomID != "!existing:domain" {
-		t.Errorf("RoomID = %q, want !existing:domain", info.RoomID)
+	if info.RoomID != "!existing:test.domain" {
+		t.Errorf("RoomID = %q, want !existing:test.domain", info.RoomID)
+	}
+	if createCalls != 1 {
+		t.Errorf("createRoom call count = %d, want 1", createCalls)
+	}
+	if resolveCalls != 1 {
+		t.Errorf("directory GET call count = %d, want 1", resolveCalls)
+	}
+}
+
+func TestResolveRoomAlias_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/directory/room/#missing:d":
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_NOT_FOUND", "error": "Room alias not found.",
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "a", AdminPassword: "p",
+	}, server.Client())
+	roomID, found, err := c.ResolveRoomAlias(context.Background(), "#missing:d")
+	if err != nil {
+		t.Fatalf("ResolveRoomAlias: %v", err)
+	}
+	if found {
+		t.Error("expected found=false for missing alias")
+	}
+	if roomID != "" {
+		t.Errorf("roomID = %q, want empty", roomID)
+	}
+}
+
+func TestDeleteRoomAlias_Idempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/directory/room/#gone:d":
+			if r.Method != http.MethodDelete {
+				t.Errorf("method = %s, want DELETE", r.Method)
+			}
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_NOT_FOUND", "error": "Room alias not found.",
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "a", AdminPassword: "p",
+	}, server.Client())
+	if err := c.DeleteRoomAlias(context.Background(), "#gone:d"); err != nil {
+		t.Errorf("DeleteRoomAlias should be idempotent on M_NOT_FOUND, got %v", err)
+	}
+}
+
+func TestDeleteRoomAlias_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/directory/room/#live:d":
+			if r.Method != http.MethodDelete {
+				t.Errorf("method = %s, want DELETE", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("{}"))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "a", AdminPassword: "p",
+	}, server.Client())
+	if err := c.DeleteRoomAlias(context.Background(), "#live:d"); err != nil {
+		t.Fatalf("DeleteRoomAlias: %v", err)
 	}
 }
 

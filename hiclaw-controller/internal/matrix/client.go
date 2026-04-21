@@ -19,8 +19,24 @@ type Client interface {
 	EnsureUser(ctx context.Context, req EnsureUserRequest) (*UserCredentials, error)
 
 	// CreateRoom creates a new Matrix room with the given configuration.
-	// If req.ExistingRoomID is set, returns it without creating a new room.
+	// When req.RoomAliasName is non-empty the call is idempotent: if a room
+	// with that alias already exists on the homeserver, the existing RoomID
+	// is resolved and returned with Created=false. Callers SHOULD always
+	// populate RoomAliasName for controller-managed rooms to avoid duplicate
+	// creation caused by K8s informer cache lag or concurrent reconciles.
 	CreateRoom(ctx context.Context, req CreateRoomRequest) (*RoomInfo, error)
+
+	// ResolveRoomAlias looks up the RoomID a Matrix alias currently points
+	// to. Returns (roomID, true, nil) on hit, ("", false, nil) when the
+	// alias does not exist (M_NOT_FOUND), and ("", false, err) on any
+	// other error. The alias argument MUST be the full form
+	// "#localpart:server".
+	ResolveRoomAlias(ctx context.Context, alias string) (string, bool, error)
+
+	// DeleteRoomAlias removes a Matrix alias so a future CreateRoom with the
+	// same localpart starts fresh. Idempotent: a missing alias returns nil.
+	// The alias argument MUST be the full form "#localpart:server".
+	DeleteRoomAlias(ctx context.Context, alias string) error
 
 	// JoinRoom makes the user identified by token join the given room.
 	JoinRoom(ctx context.Context, roomID, userToken string) error
@@ -176,10 +192,6 @@ func (c *TuwunelClient) Login(ctx context.Context, username, password string) (s
 }
 
 func (c *TuwunelClient) CreateRoom(ctx context.Context, req CreateRoomRequest) (*RoomInfo, error) {
-	if req.ExistingRoomID != "" {
-		return &RoomInfo{RoomID: req.ExistingRoomID, Created: false}, nil
-	}
-
 	token := req.CreatorToken
 	if token == "" {
 		var err error
@@ -195,6 +207,10 @@ func (c *TuwunelClient) CreateRoom(ctx context.Context, req CreateRoomRequest) (
 		"invite":    req.Invite,
 		"preset":    "trusted_private_chat",
 		"is_direct": req.IsDirect,
+	}
+
+	if req.RoomAliasName != "" {
+		body["room_alias_name"] = req.RoomAliasName
 	}
 
 	if len(req.PowerLevels) > 0 {
@@ -216,7 +232,9 @@ func (c *TuwunelClient) CreateRoom(ctx context.Context, req CreateRoomRequest) (
 	}
 
 	var resp struct {
-		RoomID string `json:"room_id"`
+		RoomID  string `json:"room_id"`
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
 	}
 
 	statusCode, err := c.doJSON(ctx, http.MethodPost,
@@ -224,14 +242,93 @@ func (c *TuwunelClient) CreateRoom(ctx context.Context, req CreateRoomRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("create room %q: %w", req.Name, err)
 	}
-	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
-		return nil, fmt.Errorf("create room %q: HTTP %d", req.Name, statusCode)
-	}
-	if resp.RoomID == "" {
-		return nil, fmt.Errorf("create room %q: empty room_id in response", req.Name)
+
+	if statusCode == http.StatusOK || statusCode == http.StatusCreated {
+		if resp.RoomID == "" {
+			return nil, fmt.Errorf("create room %q: empty room_id in response", req.Name)
+		}
+		return &RoomInfo{RoomID: resp.RoomID, Created: true}, nil
 	}
 
-	return &RoomInfo{RoomID: resp.RoomID, Created: true}, nil
+	// Alias already claimed by a prior reconcile: resolve it and treat as
+	// idempotent success. This is the sole path that turns informer-cache
+	// lag / concurrent reconciles into a no-op instead of a duplicate room.
+	if req.RoomAliasName != "" && resp.ErrCode == "M_ROOM_IN_USE" {
+		alias := roomAliasFullFor(c.config.Domain, req.RoomAliasName)
+		existingID, found, resolveErr := c.ResolveRoomAlias(ctx, alias)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("create room %q: alias %s in use, resolve failed: %w",
+				req.Name, alias, resolveErr)
+		}
+		if !found {
+			return nil, fmt.Errorf("create room %q: alias %s reported in use but resolve returned not found",
+				req.Name, alias)
+		}
+		return &RoomInfo{RoomID: existingID, Created: false}, nil
+	}
+
+	return nil, fmt.Errorf("create room %q: HTTP %d %s %s",
+		req.Name, statusCode, resp.ErrCode, resp.Error)
+}
+
+// ResolveRoomAlias implements Client.ResolveRoomAlias.
+func (c *TuwunelClient) ResolveRoomAlias(ctx context.Context, alias string) (string, bool, error) {
+	token, err := c.ensureAdminToken(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve alias %s: %w", alias, err)
+	}
+
+	var resp struct {
+		RoomID  string `json:"room_id"`
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+
+	statusCode, err := c.doJSON(ctx, http.MethodGet,
+		"/_matrix/client/v3/directory/room/"+encodeAlias(alias),
+		token, nil, &resp)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve alias %s: %w", alias, err)
+	}
+	if statusCode == http.StatusOK {
+		if resp.RoomID == "" {
+			return "", false, fmt.Errorf("resolve alias %s: empty room_id in response", alias)
+		}
+		return resp.RoomID, true, nil
+	}
+	if statusCode == http.StatusNotFound || resp.ErrCode == "M_NOT_FOUND" {
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf("resolve alias %s: HTTP %d %s %s",
+		alias, statusCode, resp.ErrCode, resp.Error)
+}
+
+// DeleteRoomAlias implements Client.DeleteRoomAlias.
+func (c *TuwunelClient) DeleteRoomAlias(ctx context.Context, alias string) error {
+	token, err := c.ensureAdminToken(ctx)
+	if err != nil {
+		return fmt.Errorf("delete alias %s: %w", alias, err)
+	}
+
+	var resp struct {
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+
+	statusCode, err := c.doJSON(ctx, http.MethodDelete,
+		"/_matrix/client/v3/directory/room/"+encodeAlias(alias),
+		token, nil, &resp)
+	if err != nil {
+		return fmt.Errorf("delete alias %s: %w", alias, err)
+	}
+	if statusCode == http.StatusOK {
+		return nil
+	}
+	if statusCode == http.StatusNotFound || resp.ErrCode == "M_NOT_FOUND" {
+		return nil
+	}
+	return fmt.Errorf("delete alias %s: HTTP %d %s %s",
+		alias, statusCode, resp.ErrCode, resp.Error)
 }
 
 func (c *TuwunelClient) JoinRoom(ctx context.Context, roomID, userToken string) error {
@@ -481,6 +578,22 @@ func (c *TuwunelClient) doJSON(ctx context.Context, method, path, token string, 
 // encodeRoomID percent-encodes the "!" in room IDs for URL paths.
 func encodeRoomID(roomID string) string {
 	return strings.ReplaceAll(roomID, "!", "%21")
+}
+
+// roomAliasFullFor builds the full Matrix alias "#localpart:server" from a
+// localpart. Exposed at package level so the service layer can synthesize
+// the same alias format used by the client when calling ResolveRoomAlias /
+// DeleteRoomAlias.
+func roomAliasFullFor(domain, localpart string) string {
+	return "#" + localpart + ":" + domain
+}
+
+// encodeAlias percent-encodes the "#" and ":" characters used by Matrix room
+// aliases for safe inclusion in URL paths.
+func encodeAlias(alias string) string {
+	s := strings.ReplaceAll(alias, "#", "%23")
+	s = strings.ReplaceAll(s, ":", "%3A")
+	return s
 }
 
 func truncate(b []byte, max int) string {
