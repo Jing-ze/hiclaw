@@ -19,10 +19,11 @@ import (
 
 // DockerConfig holds Docker backend configuration.
 type DockerConfig struct {
-	SocketPath       string
-	WorkerImage      string // default worker image (HICLAW_WORKER_IMAGE)
-	CopawWorkerImage string // default copaw worker image (HICLAW_COPAW_WORKER_IMAGE)
-	DefaultNetwork   string // default Docker network (default "hiclaw-net")
+	SocketPath        string
+	WorkerImage       string // default worker image (HICLAW_WORKER_IMAGE)
+	CopawWorkerImage  string // default copaw worker image (HICLAW_COPAW_WORKER_IMAGE)
+	HermesWorkerImage string // default hermes worker image (HICLAW_HERMES_WORKER_IMAGE)
+	DefaultNetwork    string // default Docker network (default "hiclaw-net")
 }
 
 // DockerBackend manages worker containers via the Docker Engine API over a Unix socket.
@@ -95,12 +96,24 @@ func (d *DockerBackend) Create(ctx context.Context, req CreateRequest) (*WorkerR
 		containerName = prefix + req.Name
 	}
 
+	// Resolve effective runtime once: explicit > caller fallback > openclaw.
+	// We do this before image fallback so all runtime-dependent decisions
+	// (image, working dir, labels) see a consistent normalized value. The
+	// CRD intentionally does not pin a default — see ResolveRuntime godoc.
+	// Caller (worker / manager reconciler) is responsible for picking the
+	// right env var for RuntimeFallback (HICLAW_DEFAULT_WORKER_RUNTIME for
+	// workers, HICLAW_MANAGER_RUNTIME for managers).
+	req.Runtime = ResolveRuntime(req.Runtime, req.RuntimeFallback)
+
 	// Default image fallback
 	image := req.Image
 	if image == "" {
-		if req.Runtime == RuntimeCopaw && d.config.CopawWorkerImage != "" {
+		switch {
+		case req.Runtime == RuntimeCopaw && d.config.CopawWorkerImage != "":
 			image = d.config.CopawWorkerImage
-		} else {
+		case req.Runtime == RuntimeHermes && d.config.HermesWorkerImage != "":
+			image = d.config.HermesWorkerImage
+		default:
 			image = d.config.WorkerImage
 		}
 	}
