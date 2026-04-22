@@ -128,8 +128,8 @@ func (r *Resolver) resolveEntries(in []v1beta1.AccessEntry, tmpl templateCtx) ([
 				return nil, fmt.Errorf("entry[%d]: %w", i, err)
 			}
 			out = append(out, entry)
-		case credprovider.ServiceGatewayAdmin:
-			entry, err := r.resolveGatewayAdmin(e, tmpl)
+		case credprovider.ServiceAIGateway:
+			entry, err := r.resolveAIGateway(e, tmpl)
 			if err != nil {
 				return nil, fmt.Errorf("entry[%d]: %w", i, err)
 			}
@@ -189,16 +189,16 @@ func (r *Resolver) resolveObjectStorage(e v1beta1.AccessEntry, tmpl templateCtx)
 	}, nil
 }
 
-type gatewayAdminScope struct {
+type aiGatewayScope struct {
 	GatewayRef string   `json:"gatewayRef,omitempty"`
 	GatewayID  string   `json:"gatewayId,omitempty"`
 	Resources  []string `json:"resources,omitempty"`
 }
 
-func (r *Resolver) resolveGatewayAdmin(e v1beta1.AccessEntry, tmpl templateCtx) (credprovider.AccessEntry, error) {
-	var s gatewayAdminScope
+func (r *Resolver) resolveAIGateway(e v1beta1.AccessEntry, tmpl templateCtx) (credprovider.AccessEntry, error) {
+	var s aiGatewayScope
 	if err := unmarshalScope(e.Scope, &s); err != nil {
-		return credprovider.AccessEntry{}, fmt.Errorf("gateway-admin: %w", err)
+		return credprovider.AccessEntry{}, fmt.Errorf("ai-gateway: %w", err)
 	}
 
 	gatewayID := strings.TrimSpace(s.GatewayID)
@@ -206,11 +206,11 @@ func (r *Resolver) resolveGatewayAdmin(e v1beta1.AccessEntry, tmpl templateCtx) 
 		switch s.GatewayRef {
 		case "", "default":
 			if r.defaultGatewayID == "" {
-				return credprovider.AccessEntry{}, errors.New("gateway-admin: gatewayRef=default but controller has no AI Gateway configured")
+				return credprovider.AccessEntry{}, errors.New("ai-gateway: gatewayRef=default but controller has no AI Gateway configured")
 			}
 			gatewayID = r.defaultGatewayID
 		default:
-			return credprovider.AccessEntry{}, fmt.Errorf("gateway-admin: unknown gatewayRef %q", s.GatewayRef)
+			return credprovider.AccessEntry{}, fmt.Errorf("ai-gateway: unknown gatewayRef %q", s.GatewayRef)
 		}
 	}
 
@@ -223,7 +223,7 @@ func (r *Resolver) resolveGatewayAdmin(e v1beta1.AccessEntry, tmpl templateCtx) 
 	}
 
 	return credprovider.AccessEntry{
-		Service:     credprovider.ServiceGatewayAdmin,
+		Service:     credprovider.ServiceAIGateway,
 		Permissions: copyPermissions(e.Permissions),
 		Scope: credprovider.AccessScope{
 			GatewayID: gatewayID,

@@ -47,7 +47,7 @@ type AccessScope struct {
 	// object-storage
 	Bucket   string   `json:"bucket,omitempty"`
 	Prefixes []string `json:"prefixes,omitempty"`
-	// gateway-admin
+	// ai-gateway
 	GatewayID string   `json:"gatewayId,omitempty"`
 	Resources []string `json:"resources,omitempty"`
 }
@@ -72,5 +72,5 @@ type IssueResponse struct {
 // buildInlinePolicy dispatch.
 const (
 	ServiceObjectStorage = "object-storage"
-	ServiceGatewayAdmin  = "gateway-admin"
+	ServiceAIGateway     = "ai-gateway"
 )

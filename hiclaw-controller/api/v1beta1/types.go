@@ -13,7 +13,7 @@ const (
 )
 
 // AccessEntry declares one cloud-permission grant under a logical
-// service. v1 supported services: "object-storage", "gateway-admin".
+// service. v1 supported services: "object-storage", "ai-gateway".
 //
 // Scope is a schema-less JSON blob in the CR layer: it may reference
 // logical names (bucketRef: workspace, gatewayRef: default) and

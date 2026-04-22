@@ -82,7 +82,7 @@ func DefaultEntriesForManager() []v1beta1.AccessEntry {
 //
 // bucket is the configured OSS bucket (OSSBucket). gatewayID is the
 // configured APIG gateway id; pass "" when UsesAIGateway() is false
-// and the gateway-admin entry will be omitted.
+// and the ai-gateway entry will be omitted.
 func ControllerDefaults(bucket, gatewayID string) []credprovider.AccessEntry {
 	entries := []credprovider.AccessEntry{
 		{
@@ -96,7 +96,7 @@ func ControllerDefaults(bucket, gatewayID string) []credprovider.AccessEntry {
 	}
 	if gatewayID != "" {
 		entries = append(entries, credprovider.AccessEntry{
-			Service:     credprovider.ServiceGatewayAdmin,
+			Service:     credprovider.ServiceAIGateway,
 			Permissions: []string{"read", "write"},
 			Scope: credprovider.AccessScope{
 				GatewayID: gatewayID,

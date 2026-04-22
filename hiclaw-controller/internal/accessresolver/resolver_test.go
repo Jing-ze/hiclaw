@@ -170,13 +170,13 @@ func TestResolveManager_Defaults(t *testing.T) {
 	}
 }
 
-func TestResolve_GatewayAdminHappyPath(t *testing.T) {
+func TestResolve_AIGatewayHappyPath(t *testing.T) {
 	worker := &v1beta1.Worker{}
 	worker.Name = "gw-bot"
 	worker.Namespace = testNS
 	worker.Spec.AccessEntries = []v1beta1.AccessEntry{
 		{
-			Service:     credprovider.ServiceGatewayAdmin,
+			Service:     credprovider.ServiceAIGateway,
 			Permissions: []string{"read", "write"},
 			Scope: rawJSON(t, map[string]any{
 				"gatewayRef": "default",
@@ -197,7 +197,7 @@ func TestResolve_GatewayAdminHappyPath(t *testing.T) {
 		t.Fatalf("got %d entries", len(entries))
 	}
 	got := entries[0]
-	if got.Service != credprovider.ServiceGatewayAdmin {
+	if got.Service != credprovider.ServiceAIGateway {
 		t.Fatalf("service = %q", got.Service)
 	}
 	if got.Scope.GatewayID != "gw-abc123" {
@@ -208,13 +208,13 @@ func TestResolve_GatewayAdminHappyPath(t *testing.T) {
 	}
 }
 
-func TestResolve_GatewayAdminNoDefault(t *testing.T) {
+func TestResolve_AIGatewayNoDefault(t *testing.T) {
 	worker := &v1beta1.Worker{}
 	worker.Name = "gw-bot2"
 	worker.Namespace = testNS
 	worker.Spec.AccessEntries = []v1beta1.AccessEntry{
 		{
-			Service: credprovider.ServiceGatewayAdmin,
+			Service: credprovider.ServiceAIGateway,
 			Scope:   rawJSON(t, map[string]any{"gatewayRef": "default"}),
 		},
 	}
@@ -239,7 +239,7 @@ func TestControllerDefaults(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries with gateway, got %d", len(entries))
 	}
-	if entries[1].Service != credprovider.ServiceGatewayAdmin || entries[1].Scope.GatewayID != "gw-1" {
+	if entries[1].Service != credprovider.ServiceAIGateway || entries[1].Scope.GatewayID != "gw-1" {
 		t.Fatalf("unexpected second entry: %+v", entries[1])
 	}
 }
