@@ -12,6 +12,8 @@ import (
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
 	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/controller"
+	"github.com/hiclaw/hiclaw-controller/internal/oss/ossfake"
+	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"github.com/hiclaw/hiclaw-controller/test/testutil"
 	"github.com/hiclaw/hiclaw-controller/test/testutil/mocks"
 	"go.uber.org/zap/zapcore"
@@ -46,6 +48,20 @@ var (
 	mockMgrDeploy  *mocks.MockManagerDeployer
 	mockMgrBackend *mocks.MockWorkerBackend
 	mockMgrEnv     *mocks.MockManagerEnvBuilder
+
+	// Legacy wiring — real LegacyCompat against an in-memory OSS so tests can
+	// assert workers-registry.json / teams-registry.json side effects.
+	testOSS    *ossfake.Memory
+	testLegacy *service.LegacyCompat
+)
+
+// testManagerName and testMatrixDomain mirror the values used by the Provisioner
+// mock so that manually constructed MatrixUserIDs line up with what handlers
+// see in production.
+const (
+	testManagerName   = "manager"
+	testMatrixDomain  = "localhost"
+	testAgentFSSubdir = "hiclaw-envtest"
 )
 
 func TestMain(m *testing.M) {
@@ -88,13 +104,24 @@ func TestMain(m *testing.M) {
 		nil,
 	)
 
+	// Real LegacyCompat backed by an in-memory OSS so tests can assert
+	// registry side effects (workers-registry.json / teams-registry.json).
+	testOSS = ossfake.NewMemory()
+	agentFSDir := os.TempDir()
+	testLegacy = service.NewLegacyCompat(service.LegacyConfig{
+		OSS:          testOSS,
+		MatrixDomain: testMatrixDomain,
+		ManagerName:  testManagerName,
+		AgentFSDir:   agentFSDir,
+	})
+
 	workerReconciler := &controller.WorkerReconciler{
 		Client:      mgr.GetClient(),
 		Provisioner: mockProv,
 		Deployer:    mockDeploy,
 		Backend:     workerBackendRegistry,
 		EnvBuilder:  mockEnv,
-		Legacy:      nil,
+		Legacy:      testLegacy,
 	}
 	if err := workerReconciler.SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup WorkerReconciler: %v", err))
@@ -106,8 +133,8 @@ func TestMain(m *testing.M) {
 		Deployer:    mockDeploy,
 		Backend:     workerBackendRegistry,
 		EnvBuilder:  mockEnv,
-		Legacy:      nil,
-		AgentFSDir:  os.TempDir(),
+		Legacy:      testLegacy,
+		AgentFSDir:  agentFSDir,
 	}
 	if err := teamReconciler.SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup TeamReconciler: %v", err))

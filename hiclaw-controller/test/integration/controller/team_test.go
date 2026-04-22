@@ -4,6 +4,7 @@ package controller_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -14,6 +15,46 @@ import (
 	"github.com/hiclaw/hiclaw-controller/test/testutil/fixtures"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// workersRegistryFile mirrors the JSON shape of workers-registry.json. Only
+// the fields that Manager-side skills rely on are extracted; the registry
+// document itself is write-heavy and its full internal shape lives in
+// internal/service/legacy.go.
+type workersRegistryFile struct {
+	Version int                             `json:"version"`
+	Workers map[string]workersRegistryEntry `json:"workers"`
+}
+
+type workersRegistryEntry struct {
+	MatrixUserID string   `json:"matrix_user_id"`
+	RoomID       string   `json:"room_id"`
+	Runtime      string   `json:"runtime"`
+	Deployment   string   `json:"deployment"`
+	Skills       []string `json:"skills"`
+	Role         string   `json:"role"`
+	TeamID       *string  `json:"team_id"`
+	Image        *string  `json:"image"`
+}
+
+// readWorkersRegistry fetches and parses agents/<manager>/workers-registry.json
+// from the in-memory OSS wired up in suite_test.go. Returns an empty registry
+// when the file has not been written yet.
+func readWorkersRegistry(t *testing.T) *workersRegistryFile {
+	t.Helper()
+	key := "agents/" + testManagerName + "/workers-registry.json"
+	data, err := testOSS.GetObject(ctx, key)
+	if err != nil {
+		return &workersRegistryFile{Workers: map[string]workersRegistryEntry{}}
+	}
+	var reg workersRegistryFile
+	if err := json.Unmarshal(data, &reg); err != nil {
+		t.Fatalf("parse workers-registry.json: %v", err)
+	}
+	if reg.Workers == nil {
+		reg.Workers = map[string]workersRegistryEntry{}
+	}
+	return &reg
+}
 
 // ---------------------------------------------------------------------------
 // Team lifecycle — happy path
@@ -102,6 +143,89 @@ func TestTeamCreate_ProvisionsLeaderAndWorkers(t *testing.T) {
 	}
 }
 
+// TestTeamCreate_WritesWorkersRegistry is the direct regression guard for
+// tests/test-18-team-config-verify.sh. Before PR #666 removed the child
+// Worker CR per team member, WorkerReconciler.reconcileLegacy used to
+// populate workers-registry.json with role/team_id for each member; after
+// the refactor TeamReconciler must do the same itself or manager-side
+// skills (find-worker, push-worker-skills, update-worker-config, etc.)
+// silently break.
+//
+// The contract this test locks in:
+//   - leader has role="team_leader", team_id=<team name>, runtime="copaw"
+//   - workers have role="worker", team_id=<team name>, runtime="copaw"
+//   - every member has a non-empty room_id and matrix_user_id
+//   - leader has no image (hardcoded), workers carry image when declared
+func TestTeamCreate_WritesWorkersRegistry(t *testing.T) {
+	resetMocks()
+
+	name := fixtures.UniqueName("t-registry")
+	leader := name + "-lead"
+	w1 := name + "-w1"
+	w2 := name + "-w2"
+	team := fixtures.NewTestTeam(name, leader, w1, w2)
+
+	if err := k8sClient.Create(ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	t.Cleanup(func() { _ = deleteAndWait(t, team) })
+
+	waitForTeamPhase(t, team, "Active")
+
+	// Registry writes are driven by the reconcile loop; poll until all three
+	// expected members have landed to avoid racing the in-flight reconcile.
+	assertEventually(t, func() error {
+		reg := readWorkersRegistry(t)
+		for _, n := range []string{leader, w1, w2} {
+			if _, ok := reg.Workers[n]; !ok {
+				return fmt.Errorf("workers-registry missing entry %q (have: %v)", n, registryKeys(reg))
+			}
+		}
+		return nil
+	})
+
+	reg := readWorkersRegistry(t)
+
+	leaderEntry, ok := reg.Workers[leader]
+	if !ok {
+		t.Fatalf("registry missing leader %q", leader)
+	}
+	if leaderEntry.Role != "team_leader" {
+		t.Errorf("leader role=%q, want team_leader", leaderEntry.Role)
+	}
+	if leaderEntry.TeamID == nil || *leaderEntry.TeamID != name {
+		t.Errorf("leader team_id=%v, want %q", leaderEntry.TeamID, name)
+	}
+	if leaderEntry.Runtime != "copaw" {
+		t.Errorf("leader runtime=%q, want copaw", leaderEntry.Runtime)
+	}
+	if leaderEntry.MatrixUserID == "" {
+		t.Errorf("leader matrix_user_id is empty")
+	}
+	if leaderEntry.RoomID == "" {
+		t.Errorf("leader room_id is empty")
+	}
+	if leaderEntry.Image != nil {
+		t.Errorf("leader image=%v, want nil (leader spec carries no image)", leaderEntry.Image)
+	}
+
+	for _, wName := range []string{w1, w2} {
+		entry := reg.Workers[wName]
+		if entry.Role != "worker" {
+			t.Errorf("%s role=%q, want worker", wName, entry.Role)
+		}
+		if entry.TeamID == nil || *entry.TeamID != name {
+			t.Errorf("%s team_id=%v, want %q", wName, entry.TeamID, name)
+		}
+		if entry.MatrixUserID == "" {
+			t.Errorf("%s matrix_user_id is empty", wName)
+		}
+		if entry.RoomID == "" {
+			t.Errorf("%s room_id is empty", wName)
+		}
+	}
+}
+
 // TestTeamCreate_LeaderOnly guards the "leader-only team" contract: after the
 // CRD dropped `workers` from its required-list and TeamSpec.Workers gained
 // `omitempty`, a Team with just a leader must reconcile to the same terminal
@@ -178,6 +302,23 @@ func TestTeamCreate_LeaderOnly(t *testing.T) {
 	if got := len(mockProv.Calls.ProvisionWorker); got < 1 {
 		t.Errorf("ProvisionWorker count=%d, want >=1 (leader)", got)
 	}
+
+	// workers-registry.json must carry the leader with role=team_leader so
+	// manager-side skills treat a leader-only team the same way they treat a
+	// populated team.
+	assertEventually(t, func() error {
+		if _, ok := readWorkersRegistry(t).Workers[name+"-lead"]; !ok {
+			return fmt.Errorf("registry missing leader %q", name+"-lead")
+		}
+		return nil
+	})
+	entry := readWorkersRegistry(t).Workers[name+"-lead"]
+	if entry.Role != "team_leader" {
+		t.Errorf("leader role=%q, want team_leader", entry.Role)
+	}
+	if entry.TeamID == nil || *entry.TeamID != name {
+		t.Errorf("leader team_id=%v, want %q", entry.TeamID, name)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +376,22 @@ func TestTeamUpdate_RemovesStaleWorker(t *testing.T) {
 	if !found {
 		t.Errorf("DeprovisionWorker should have been called for stale %s-w2", name)
 	}
+
+	// workers-registry.json must drop the stale entry so manager-side
+	// tooling stops resolving it; the surviving leader + worker stay.
+	assertEventually(t, func() error {
+		reg := readWorkersRegistry(t)
+		if _, ok := reg.Workers[name+"-w2"]; ok {
+			return fmt.Errorf("stale entry %s-w2 still present in registry", name)
+		}
+		if _, ok := reg.Workers[name+"-lead"]; !ok {
+			return fmt.Errorf("leader %s-lead missing from registry", name)
+		}
+		if _, ok := reg.Workers[name+"-w1"]; !ok {
+			return fmt.Errorf("remaining worker %s-w1 missing from registry", name)
+		}
+		return nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +439,20 @@ func TestTeamDelete_CleansUpAllMembers(t *testing.T) {
 	if len(mockDeploy.Calls.CleanupOSSData) < 2 {
 		t.Errorf("CleanupOSSData count=%d, want >=2 (leader + worker)", len(mockDeploy.Calls.CleanupOSSData))
 	}
+
+	// workers-registry.json must no longer reference either member: a deleted
+	// team must not leave ghost rows that manager-side tooling would keep
+	// trying to contact.
+	assertEventually(t, func() error {
+		reg := readWorkersRegistry(t)
+		if _, ok := reg.Workers[name+"-lead"]; ok {
+			return fmt.Errorf("ghost leader %s-lead still in registry", name)
+		}
+		if _, ok := reg.Workers[name+"-w1"]; ok {
+			return fmt.Errorf("ghost worker %s-w1 still in registry", name)
+		}
+		return nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +740,16 @@ func updateTeamSpec(t *testing.T, team *v1beta1.Team, mutate func(*v1beta1.Team)
 		mutate(&cur)
 		return k8sClient.Update(ctx, &cur)
 	})
+}
+
+// registryKeys returns the set of member names currently in the registry,
+// used for test error messages.
+func registryKeys(reg *workersRegistryFile) []string {
+	out := make([]string, 0, len(reg.Workers))
+	for k := range reg.Workers {
+		out = append(out, k)
+	}
+	return out
 }
 
 func deleteAndWait(t *testing.T, team *v1beta1.Team) error {

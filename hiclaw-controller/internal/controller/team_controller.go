@@ -168,6 +168,7 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 		if err := ReconcileMemberDelete(ctx, deps, staleCtx); err != nil {
 			logger.Error(err, "failed to remove stale team member (non-fatal)", "name", ms.Name)
 		}
+		r.removeLegacyMember(ctx, ms.Name)
 	}
 	pruneMembers(&t.Status, desiredNames)
 
@@ -204,6 +205,12 @@ func (r *TeamReconciler) reconcileTeamNormal(ctx context.Context, t *v1beta1.Tea
 		// and retries the container recreation. ms.Observed was already
 		// updated inside reconcileMember as soon as infra succeeded.
 		ms.SpecHash = hashMemberSourceSpec(t, m.Role, m.Name)
+
+		// Publish this member into workers-registry.json. Positioned after
+		// SpecHash update for the same reason WorkerReconciler writes legacy
+		// only after ReconcileMemberExpose succeeded: a fully converged
+		// member is what the Manager-side tooling expects to find there.
+		r.reconcileLegacyMember(ctx, t, m, ms)
 	}
 
 	// --- Step 5: Leader-specific hooks (coordination, groupAllowFrom, registry) ---
@@ -447,6 +454,7 @@ func (r *TeamReconciler) handleDelete(ctx context.Context, t *v1beta1.Team) erro
 			logger.Error(err, "member cleanup failed (non-fatal)", "name", name)
 			errs = append(errs, err)
 		}
+		r.removeLegacyMember(ctx, name)
 	}
 
 	if r.Legacy != nil && r.Legacy.Enabled() {
@@ -477,6 +485,62 @@ func (r *TeamReconciler) handleDelete(ctx context.Context, t *v1beta1.Team) erro
 		return kerrors.NewAggregate(errs)
 	}
 	return nil
+}
+
+// reconcileLegacyMember upserts a team member (leader or worker) into the
+// legacy workers-registry.json. This is the TeamReconciler counterpart to
+// WorkerReconciler.reconcileLegacy — both must emit entries with identical
+// field semantics (role, team_id, runtime, skills, image) so that
+// manager-side tooling (find-worker.sh, push-worker-skills.sh,
+// update-worker-config.sh, etc.) can treat standalone workers and team
+// members uniformly.
+//
+// m.Role drives the role string: RoleTeamLeader -> "team_leader",
+// RoleTeamWorker -> "worker". ms is the Team.Status member entry populated by
+// reconcileMember; RoomID/MatrixUserID on it are the source of truth for the
+// registry row, but MatrixUserID is re-derived via r.Legacy.MatrixUserID to
+// stay deterministic (mirrors WorkerReconciler which uses
+// r.Provisioner.MatrixUserID(w.Name)).
+//
+// Non-fatal: any OSS error is logged but does not fail the reconcile pass,
+// matching the legacy contract in WorkerReconciler.
+func (r *TeamReconciler) reconcileLegacyMember(ctx context.Context, t *v1beta1.Team, m MemberContext, ms *v1beta1.TeamMemberStatus) {
+	if r.Legacy == nil || !r.Legacy.Enabled() {
+		return
+	}
+	logger := log.FromContext(ctx)
+
+	roomID := ""
+	if ms != nil {
+		roomID = ms.RoomID
+	}
+
+	entry := service.WorkerRegistryEntry{
+		Name:         m.Name,
+		MatrixUserID: r.Legacy.MatrixUserID(m.Name),
+		RoomID:       roomID,
+		Runtime:      m.Spec.Runtime,
+		Deployment:   "local",
+		Skills:       m.Spec.Skills,
+		Role:         m.Role.String(),
+		TeamID:       nilIfEmpty(t.Name),
+		Image:        nilIfEmpty(m.Spec.Image),
+	}
+	if err := r.Legacy.UpdateWorkersRegistry(entry); err != nil {
+		logger.Error(err, "workers-registry update failed (non-fatal)", "name", m.Name)
+	}
+}
+
+// removeLegacyMember deletes a team member from workers-registry.json. Used
+// by both the stale-member cleanup in reconcileTeamNormal and the full team
+// deletion in handleDelete. No-op when Legacy is disabled.
+func (r *TeamReconciler) removeLegacyMember(ctx context.Context, name string) {
+	if r.Legacy == nil || !r.Legacy.Enabled() {
+		return
+	}
+	if err := r.Legacy.RemoveFromWorkersRegistry(name); err != nil {
+		log.FromContext(ctx).Error(err, "workers-registry remove failed (non-fatal)", "name", name)
+	}
 }
 
 func (r *TeamReconciler) failTeam(ctx context.Context, t *v1beta1.Team, patchBase client.Patch, msg string) (reconcile.Result, error) {

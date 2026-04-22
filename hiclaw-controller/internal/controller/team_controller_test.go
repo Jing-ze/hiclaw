@@ -1,9 +1,13 @@
 package controller
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
+	"github.com/hiclaw/hiclaw-controller/internal/oss/ossfake"
+	"github.com/hiclaw/hiclaw-controller/internal/service"
 )
 
 func TestLeaderHeartbeatEvery(t *testing.T) {
@@ -144,5 +148,170 @@ func TestHashMemberSourceSpec_IgnoresPeerChanges(t *testing.T) {
 	if hashMemberSourceSpec(base, RoleTeamWorker, "alpha-dev") ==
 		hashMemberSourceSpec(mutated, RoleTeamWorker, "alpha-dev") {
 		t.Errorf("alpha-dev hash unchanged after model mutation; expected different")
+	}
+}
+
+// registryEntry is the minimal subset of service.workersRegistry we need to
+// inspect in tests — duplicated locally because the registry shape (and
+// WorkerRegistryEntry fields we care about) are stable JSON contracts that
+// Manager-side tooling also consumes. Keeping this in sync with the JSON
+// tags in service.WorkerRegistryEntry is deliberate.
+type registryEntry struct {
+	MatrixUserID string   `json:"matrix_user_id"`
+	RoomID       string   `json:"room_id"`
+	Runtime      string   `json:"runtime"`
+	Deployment   string   `json:"deployment"`
+	Skills       []string `json:"skills"`
+	Role         string   `json:"role"`
+	TeamID       *string  `json:"team_id"`
+	Image        *string  `json:"image"`
+}
+
+type registryFile struct {
+	Version int                      `json:"version"`
+	Workers map[string]registryEntry `json:"workers"`
+}
+
+func readRegistry(t *testing.T, fake *ossfake.Memory, managerName string) *registryFile {
+	t.Helper()
+	key := "agents/" + managerName + "/workers-registry.json"
+	data, err := fake.GetObject(context.Background(), key)
+	if err != nil {
+		t.Fatalf("read registry %s: %v", key, err)
+	}
+	var out registryFile
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("parse registry: %v", err)
+	}
+	return &out
+}
+
+func newTestLegacy(t *testing.T) (*service.LegacyCompat, *ossfake.Memory) {
+	t.Helper()
+	fake := ossfake.NewMemory()
+	legacy := service.NewLegacyCompat(service.LegacyConfig{
+		OSS:          fake,
+		MatrixDomain: "matrix.local",
+		ManagerName:  "manager",
+		// Leave AgentFSDir empty so LegacyCompat skips the local shared-mount
+		// write that would otherwise require creating a real directory.
+		AgentFSDir: "",
+	})
+	return legacy, fake
+}
+
+// TestReconcileLegacyMember_BuildsEntry is the regression guard for the
+// test-18 failure: TeamReconciler must populate workers-registry.json with
+// role=team_leader / worker and team_id=<team name> for each team member so
+// manager-side skills (find-worker.sh, push-worker-skills.sh, etc.) can
+// continue to resolve team members by name.
+func TestReconcileLegacyMember_BuildsEntry(t *testing.T) {
+	legacy, fake := newTestLegacy(t)
+	r := &TeamReconciler{Legacy: legacy}
+
+	team := &v1beta1.Team{}
+	team.Name = "team-a"
+	team.Spec.Leader = v1beta1.LeaderSpec{Name: "lead"}
+
+	leaderCtx := MemberContext{
+		Name: "lead",
+		Role: RoleTeamLeader,
+		Spec: v1beta1.WorkerSpec{Runtime: "copaw"},
+	}
+	leaderStatus := &v1beta1.TeamMemberStatus{Name: "lead", RoomID: "!room-lead:matrix.local"}
+	r.reconcileLegacyMember(context.Background(), team, leaderCtx, leaderStatus)
+
+	workerCtx := MemberContext{
+		Name: "dev",
+		Role: RoleTeamWorker,
+		Spec: v1beta1.WorkerSpec{
+			Runtime: "copaw",
+			Image:   "dev:v1",
+			Skills:  []string{"refactor"},
+		},
+	}
+	workerStatus := &v1beta1.TeamMemberStatus{Name: "dev", RoomID: "!room-dev:matrix.local"}
+	r.reconcileLegacyMember(context.Background(), team, workerCtx, workerStatus)
+
+	reg := readRegistry(t, fake, "manager")
+	if reg.Version != 1 {
+		t.Fatalf("registry version=%d, want 1", reg.Version)
+	}
+
+	leader, ok := reg.Workers["lead"]
+	if !ok {
+		t.Fatalf("leader entry missing from registry: %+v", reg.Workers)
+	}
+	if leader.Role != "team_leader" {
+		t.Errorf("leader role=%q, want team_leader", leader.Role)
+	}
+	if leader.TeamID == nil || *leader.TeamID != "team-a" {
+		t.Errorf("leader team_id=%v, want team-a", leader.TeamID)
+	}
+	if leader.Runtime != "copaw" {
+		t.Errorf("leader runtime=%q, want copaw", leader.Runtime)
+	}
+	if leader.RoomID != "!room-lead:matrix.local" {
+		t.Errorf("leader room_id=%q, want !room-lead:matrix.local", leader.RoomID)
+	}
+	if leader.MatrixUserID != "@lead:matrix.local" {
+		t.Errorf("leader matrix_user_id=%q, want @lead:matrix.local", leader.MatrixUserID)
+	}
+	if leader.Deployment != "local" {
+		t.Errorf("leader deployment=%q, want local", leader.Deployment)
+	}
+	if leader.Image != nil {
+		t.Errorf("leader image=%v, want nil (leader spec has no image)", leader.Image)
+	}
+
+	worker, ok := reg.Workers["dev"]
+	if !ok {
+		t.Fatalf("worker entry missing from registry: %+v", reg.Workers)
+	}
+	if worker.Role != "worker" {
+		t.Errorf("worker role=%q, want worker", worker.Role)
+	}
+	if worker.TeamID == nil || *worker.TeamID != "team-a" {
+		t.Errorf("worker team_id=%v, want team-a", worker.TeamID)
+	}
+	if worker.Image == nil || *worker.Image != "dev:v1" {
+		t.Errorf("worker image=%v, want dev:v1", worker.Image)
+	}
+	if len(worker.Skills) != 1 || worker.Skills[0] != "refactor" {
+		t.Errorf("worker skills=%v, want [refactor]", worker.Skills)
+	}
+}
+
+func TestReconcileLegacyMember_NoOpWhenLegacyNil(t *testing.T) {
+	r := &TeamReconciler{Legacy: nil}
+	team := &v1beta1.Team{}
+	team.Name = "team-a"
+	// Must not panic.
+	r.reconcileLegacyMember(context.Background(), team, MemberContext{Name: "x", Role: RoleTeamLeader}, nil)
+	r.removeLegacyMember(context.Background(), "x")
+}
+
+// TestRemoveLegacyMember_DeletesEntry covers the stale-cleanup and
+// handleDelete paths: once removed, the entry disappears so manager-side
+// skills no longer see a ghost worker.
+func TestRemoveLegacyMember_DeletesEntry(t *testing.T) {
+	legacy, fake := newTestLegacy(t)
+	r := &TeamReconciler{Legacy: legacy}
+
+	team := &v1beta1.Team{}
+	team.Name = "team-a"
+	team.Spec.Leader = v1beta1.LeaderSpec{Name: "lead"}
+	r.reconcileLegacyMember(context.Background(), team,
+		MemberContext{Name: "lead", Role: RoleTeamLeader, Spec: v1beta1.WorkerSpec{Runtime: "copaw"}},
+		&v1beta1.TeamMemberStatus{Name: "lead"})
+
+	if _, ok := readRegistry(t, fake, "manager").Workers["lead"]; !ok {
+		t.Fatalf("precondition: lead should be present before removal")
+	}
+
+	r.removeLegacyMember(context.Background(), "lead")
+
+	if _, ok := readRegistry(t, fake, "manager").Workers["lead"]; ok {
+		t.Fatalf("lead still present after removeLegacyMember")
 	}
 }
