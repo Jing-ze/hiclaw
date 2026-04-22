@@ -14,7 +14,7 @@ spec:
           properties:
             spec:
               type: object
-              required: [leader, workers]
+              required: [leader]
               properties:
                 description:
                   type: string

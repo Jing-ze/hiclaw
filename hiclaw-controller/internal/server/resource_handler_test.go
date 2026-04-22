@@ -270,6 +270,54 @@ func TestCreateAndUpdateTeamLeaderRuntimeConfig(t *testing.T) {
 	}
 }
 
+// CreateTeam must accept a payload that omits `workers` entirely (leader-only
+// team). The CRD no longer lists `workers` in its required-properties set and
+// both TeamSpec.Workers / CreateTeamRequest.Workers carry `omitempty`, so a
+// caller posting just {name, leader} should get a 201 and the stored CR must
+// have Spec.Workers == nil (no implicit empty-slice conversion).
+func TestCreateTeam_WithoutWorkers(t *testing.T) {
+	scheme := newServerTestScheme(t)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	handler := NewResourceHandler(k8sClient, "default", nil)
+
+	body := []byte(`{"name":"leader-only-team","leader":{"name":"lead","model":"qwen3.5-plus"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/teams", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.CreateTeam(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var resp TeamResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Name != "leader-only-team" {
+		t.Errorf("response Name=%q, want %q", resp.Name, "leader-only-team")
+	}
+	if resp.LeaderName != "lead" {
+		t.Errorf("response LeaderName=%q, want %q", resp.LeaderName, "lead")
+	}
+	if len(resp.WorkerNames) != 0 {
+		t.Errorf("response WorkerNames=%+v, want empty", resp.WorkerNames)
+	}
+	if resp.TotalWorkers != 0 {
+		t.Errorf("response TotalWorkers=%d, want 0", resp.TotalWorkers)
+	}
+
+	var stored v1beta1.Team
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: "leader-only-team", Namespace: "default"}, &stored); err != nil {
+		t.Fatalf("get stored team: %v", err)
+	}
+	if stored.Spec.Workers != nil {
+		t.Errorf("stored Spec.Workers=%+v, want nil (no implicit [] from handler)", stored.Spec.Workers)
+	}
+	if stored.Spec.Leader.Name != "lead" {
+		t.Errorf("stored Leader.Name=%q, want %q", stored.Spec.Leader.Name, "lead")
+	}
+}
+
 func newServerTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 

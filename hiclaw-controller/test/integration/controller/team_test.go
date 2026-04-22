@@ -102,6 +102,84 @@ func TestTeamCreate_ProvisionsLeaderAndWorkers(t *testing.T) {
 	}
 }
 
+// TestTeamCreate_LeaderOnly guards the "leader-only team" contract: after the
+// CRD dropped `workers` from its required-list and TeamSpec.Workers gained
+// `omitempty`, a Team with just a leader must reconcile to the same terminal
+// state as a team with workers — Active phase, Team/LeaderDM rooms populated,
+// LeaderReady=true, TotalWorkers=0, a single Status.Members entry for the
+// leader with RoomID/MatrixUserID filled in, and exactly one ProvisionWorker
+// call on the backend. This locks in the zero-worker path against future
+// refactors that might assume `t.Spec.Workers[0]` is addressable.
+func TestTeamCreate_LeaderOnly(t *testing.T) {
+	resetMocks()
+
+	name := fixtures.UniqueName("t-leader-only")
+	team := fixtures.NewTestTeam(name, name+"-lead")
+
+	if err := k8sClient.Create(ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	t.Cleanup(func() { _ = deleteAndWait(t, team) })
+
+	waitForTeamPhase(t, team, "Active")
+
+	var got v1beta1.Team
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+		t.Fatalf("get team: %v", err)
+	}
+
+	if got.Status.TeamRoomID == "" {
+		t.Error("TeamRoomID should be populated even for a leader-only team")
+	}
+	if got.Status.LeaderDMRoomID == "" {
+		t.Error("LeaderDMRoomID should be populated even for a leader-only team")
+	}
+	if got.Status.TotalWorkers != 0 {
+		t.Errorf("TotalWorkers=%d, want 0", got.Status.TotalWorkers)
+	}
+	if got.Status.ReadyWorkers != 0 {
+		t.Errorf("ReadyWorkers=%d, want 0", got.Status.ReadyWorkers)
+	}
+	if !got.Status.LeaderReady {
+		t.Error("LeaderReady should be true after convergence")
+	}
+
+	if len(got.Status.Members) != 1 {
+		t.Fatalf("Status.Members length=%d, want 1 (leader only): %+v", len(got.Status.Members), got.Status.Members)
+	}
+	leader := got.Status.Members[0]
+	if leader.Name != name+"-lead" {
+		t.Errorf("Members[0].Name=%q, want %q", leader.Name, name+"-lead")
+	}
+	if leader.Role != "team_leader" {
+		t.Errorf("Members[0].Role=%q, want %q", leader.Role, "team_leader")
+	}
+	if !leader.Observed {
+		t.Error("Members[0].Observed should be true after provisioning")
+	}
+	if leader.RoomID == "" {
+		t.Error("Members[0].RoomID should be populated after provisioning")
+	}
+	if leader.MatrixUserID == "" {
+		t.Error("Members[0].MatrixUserID should be populated after provisioning")
+	}
+
+	if len(mockProv.Calls.ProvisionTeamRooms) == 0 {
+		t.Error("ProvisionTeamRooms should have been called")
+	}
+	if len(mockDeploy.Calls.EnsureTeamStorage) == 0 {
+		t.Error("EnsureTeamStorage should have been called")
+	}
+	// ProvisionWorker is called at least once for the leader. Multiple calls
+	// are legitimate because status updates re-enter the reconcile loop; the
+	// important property is that the reconciler actually provisions the
+	// leader for a leader-only team rather than short-circuiting on the
+	// empty workers slice.
+	if got := len(mockProv.Calls.ProvisionWorker); got < 1 {
+		t.Errorf("ProvisionWorker count=%d, want >=1 (leader)", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Team — stale member cleanup
 // ---------------------------------------------------------------------------

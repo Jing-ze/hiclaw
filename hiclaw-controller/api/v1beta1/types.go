@@ -103,7 +103,7 @@ type TeamSpec struct {
 	Description   string             `json:"description,omitempty"`
 	Admin         *TeamAdminSpec     `json:"admin,omitempty"`
 	Leader        LeaderSpec         `json:"leader"`
-	Workers       []TeamWorkerSpec   `json:"workers"`
+	Workers       []TeamWorkerSpec   `json:"workers,omitempty"`
 	PeerMentions  *bool              `json:"peerMentions,omitempty"`  // default true
 	ChannelPolicy *ChannelPolicySpec `json:"channelPolicy,omitempty"` // team-wide overrides
 }
