@@ -346,13 +346,39 @@ func (p *Provisioner) ProvisionWorker(ctx context.Context, req WorkerProvisionRe
 		logger.Error(err, "failed to persist credentials (non-fatal)")
 	}
 
-	// When an existing alias was resolved, CreateRoom returned without
-	// sending fresh invites. Reconcile membership so late-added
-	// authorities (e.g. a team admin joining after initial provisioning)
-	// or recovered power levels are applied.
+	// Step 4a: When an existing alias was resolved, CreateRoom returned
+	// without sending fresh invites. Reconcile membership so late-added
+	// authorities (e.g. a team admin joining after initial
+	// provisioning) or recovered power levels are applied. This may
+	// (re)invite the worker if it had been removed from the room.
 	if !roomInfo.Created {
 		if err := p.ReconcileRoomMembership(ctx, roomID, []string{adminMatrixID, authorityID, workerMatrixID}); err != nil {
 			logger.Error(err, "failed to reconcile worker room membership (non-fatal)", "roomID", roomID)
+		}
+	}
+
+	// Step 4b: Have the worker accept the room invite on its behalf.
+	// Some worker runtimes (e.g. hermes-agent) don't auto-join invited
+	// rooms, so the controller does it explicitly here using the
+	// worker's freshly issued access token. JoinRoom is idempotent — if
+	// the worker already joined (e.g. CoPaw runtime which auto-accepts),
+	// the homeserver returns 200 OK. This decouples room membership from
+	// any runtime-specific Matrix client behaviour.
+	//
+	// IMPORTANT: "membership = join" is necessary but NOT sufficient for
+	// "worker is ready to process messages". CoPaw, in particular,
+	// suppresses message callbacks during its first-boot catch-up sync
+	// (see copaw/src/matrix/channel.py::_sync_loop). Any message that
+	// arrives in that catch-up window is silently dropped. Tests and
+	// managers must therefore implement at-least-once send semantics
+	// (see tests/lib/matrix-client.sh::matrix_send_and_wait_for_reply)
+	// rather than treating membership=join as a readiness signal.
+	if userCreds.AccessToken != "" && roomID != "" {
+		if err := p.matrix.JoinRoom(ctx, roomID, userCreds.AccessToken); err != nil {
+			logger.Error(err, "failed to join worker into its own room (non-fatal)",
+				"name", workerName, "roomID", roomID)
+		} else {
+			logger.Info("worker joined own room", "name", workerName, "roomID", roomID)
 		}
 	}
 
