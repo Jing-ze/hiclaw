@@ -113,6 +113,9 @@ spec:
               value: {{ .Values.worker.resources.limits.cpu | default "1000m" | quote }}
             - name: HICLAW_K8S_WORKER_MEMORY
               value: {{ .Values.worker.resources.limits.memory | default "2Gi" | quote }}
+            {{- /* Agent Pod template (optional; empty values.agents.podTemplate → file absent, controller tolerates) */}}
+            - name: HICLAW_AGENT_POD_TEMPLATE_FILE
+              value: "/etc/hiclaw/agent-pod-template/pod-template.yaml"
             {{- /* Manager CRD-driven deployment */}}
             - name: HICLAW_MANAGER_ENABLED
               value: {{ .Values.manager.enabled | quote }}
@@ -156,6 +159,11 @@ spec:
           volumeMounts:
             - name: worker-creds
               mountPath: /data/worker-creds
+            {{- if .Values.agents.podTemplate }}
+            - name: agent-pod-template
+              mountPath: /etc/hiclaw/agent-pod-template
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -210,3 +218,8 @@ spec:
       volumes:
         - name: worker-creds
           emptyDir: {}
+        {{- if .Values.agents.podTemplate }}
+        - name: agent-pod-template
+          configMap:
+            name: {{ include "hiclaw.controller.fullname" . }}-agent-pod-template
+        {{- end }}

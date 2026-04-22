@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -14,6 +15,7 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const defaultK8sNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
@@ -26,6 +28,22 @@ type K8sConfig struct {
 	HermesWorkerImage string
 	WorkerCPU         string
 	WorkerMemory      string
+
+	// AgentPodTemplateFile points at a ConfigMap-mounted PodTemplateSpec YAML
+	// used as the base Pod shape for every Manager/Worker Pod. Empty value
+	// and missing/malformed file all collapse to "no template" behavior.
+	AgentPodTemplateFile string
+}
+
+// ownerRefsCache memoizes the controller Pod's ownerReferences (filtered to
+// drop ReplicaSet entries). Populated lazily on the first successful Create;
+// failures are NOT cached so transient errors retry on the next Create. The
+// cache is held on the heap (pointer on K8sBackend) so that WithPrefix-derived
+// backends share the same cache and mutex.
+type ownerRefsCache struct {
+	mu     sync.Mutex
+	data   []metav1.OwnerReference
+	loaded bool
 }
 
 // K8sBackend manages worker lifecycle via Kubernetes Pods.
@@ -33,6 +51,8 @@ type K8sBackend struct {
 	client          K8sCoreClient
 	config          K8sConfig
 	containerPrefix string
+
+	ownerRefs *ownerRefsCache
 }
 
 // K8sCoreClient is the minimal CoreV1 client surface needed by the backend.
@@ -88,6 +108,7 @@ func NewK8sBackendWithClient(client K8sCoreClient, config K8sConfig, containerPr
 		client:          client,
 		config:          config,
 		containerPrefix: containerPrefix,
+		ownerRefs:       &ownerRefsCache{},
 	}
 }
 
@@ -177,41 +198,19 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 		}
 	}
 
-	cpuLimit := k.config.WorkerCPU
-	memLimit := k.config.WorkerMemory
-	cpuReq := "100m"
-	memReq := "256Mi"
+	defaultResources := buildDefaultResources(k.config.WorkerCPU, k.config.WorkerMemory)
+	var resourcesOverride *corev1.ResourceRequirements
 	if req.Resources != nil {
-		if req.Resources.CPULimit != "" {
-			cpuLimit = req.Resources.CPULimit
-		}
-		if req.Resources.MemoryLimit != "" {
-			memLimit = req.Resources.MemoryLimit
-		}
-		if req.Resources.CPURequest != "" {
-			cpuReq = req.Resources.CPURequest
-		}
-		if req.Resources.MemoryRequest != "" {
-			memReq = req.Resources.MemoryRequest
-		}
+		merged := mergeResourceOverrides(defaultResources, req.Resources)
+		resourcesOverride = &merged
 	}
 
-	container := corev1.Container{
+	agentContainer := corev1.Container{
 		Name:            "worker",
 		Image:           image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Env:             buildK8sEnvVars(req.Env),
-		Resources: corev1.ResourceRequirements{
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse(cpuLimit),
-				corev1.ResourceMemory: resource.MustParse(memLimit),
-			},
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse(cpuReq),
-				corev1.ResourceMemory: resource.MustParse(memReq),
-			},
-		},
-		WorkingDir: req.WorkingDir,
+		WorkingDir:      req.WorkingDir,
 	}
 
 	tokenAudience := req.AuthAudience
@@ -219,7 +218,7 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 		tokenAudience = "hiclaw-controller"
 	}
 	tokenExpSeconds := int64(3600)
-	projectedVol := corev1.Volume{
+	tokenVolume := corev1.Volume{
 		Name: "hiclaw-token",
 		VolumeSource: corev1.VolumeSource{
 			Projected: &corev1.ProjectedVolumeSource{
@@ -233,31 +232,15 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 			},
 		},
 	}
-	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+	tokenVolumeMount := corev1.VolumeMount{
 		Name:      "hiclaw-token",
 		MountPath: "/var/run/secrets/hiclaw",
 		ReadOnly:  true,
-	})
+	}
 
 	saName := req.ServiceAccountName
 	if saName == "" {
 		saName = "hiclaw-worker-" + req.Name
-	}
-	podSpec := corev1.PodSpec{
-		Containers:                   []corev1.Container{container},
-		RestartPolicy:                corev1.RestartPolicyAlways,
-		ServiceAccountName:           saName,
-		AutomountServiceAccountToken: boolPtr(false), // disable default mount; using projected volume with custom audience instead
-		Volumes:                      []corev1.Volume{projectedVol},
-	}
-	if tolerations := k.getCurrentPodTolerations(ctx); len(tolerations) > 0 {
-		podSpec.Tolerations = tolerations
-	}
-	if imagePullSecrets := k.getCurrentPodImagePullSecrets(ctx); len(imagePullSecrets) > 0 {
-		podSpec.ImagePullSecrets = imagePullSecrets
-	}
-	if hostAliases := buildHostAliases(req.ExtraHosts); len(hostAliases) > 0 {
-		podSpec.HostAliases = hostAliases
 	}
 
 	podLabels := map[string]string{
@@ -275,17 +258,23 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 		}
 	}
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: k.config.Namespace,
-			Labels:    podLabels,
-			Annotations: map[string]string{
-				"hiclaw.io/created-by": "controller",
-			},
-		},
-		Spec: podSpec,
-	}
+	tmpl := LoadAgentPodTemplate(ctx, k.config.AgentPodTemplateFile)
+	ownerRefs := k.controllerOwnerRefs(ctx)
+
+	pod := ApplyPodTemplate(tmpl, PodOverlay{
+		Name:               podName,
+		Namespace:          k.config.Namespace,
+		Labels:             podLabels,
+		Annotations:        map[string]string{"hiclaw.io/created-by": "controller"},
+		OwnerReferences:    ownerRefs,
+		ServiceAccountName: saName,
+		Container:          agentContainer,
+		ResourcesOverride:  resourcesOverride,
+		DefaultResources:   defaultResources,
+		TokenVolume:        tokenVolume,
+		TokenVolumeMount:   tokenVolumeMount,
+		HostAliases:        buildHostAliases(req.ExtraHosts),
+	})
 
 	created, err := k.client.Pods(k.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -389,32 +378,135 @@ func (k *K8sBackend) workerPodName(name string) string {
 	return k.containerPrefix + name
 }
 
-func (k *K8sBackend) getCurrentPod(ctx context.Context) *corev1.Pod {
+// getCurrentPod fetches the controller's own Pod using HOSTNAME + Namespace.
+// Returns (nil, nil) when HOSTNAME or Namespace is empty (typical for unit
+// tests and out-of-cluster runs), or (nil, err) when the API call fails.
+func (k *K8sBackend) getCurrentPod(ctx context.Context) (*corev1.Pod, error) {
 	hostname := strings.TrimSpace(os.Getenv("HOSTNAME"))
 	if hostname == "" || k.config.Namespace == "" {
-		return nil
+		return nil, nil
 	}
 	pod, err := k.client.Pods(k.config.Namespace).Get(ctx, hostname, metav1.GetOptions{})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return pod
+	return pod, nil
 }
 
-func (k *K8sBackend) getCurrentPodTolerations(ctx context.Context) []corev1.Toleration {
-	pod := k.getCurrentPod(ctx)
+// controllerOwnerRefs returns the ownerReferences that every child Pod should
+// inherit from the controller's own Pod (filtered to drop ReplicaSet owners,
+// which churn on Deployment rollouts and would wrongly chain child Pods to
+// ephemeral ReplicaSets). The result is memoized across Create calls so only
+// the first Create does an API round-trip.
+//
+// Failures return nil without caching: the next Create retries. This handles
+// two scenarios gracefully: (1) out-of-cluster / unit test runs where there's
+// no HOSTNAME → empty cache, no-op; (2) the controller Pod doesn't exist yet
+// in the API cache at startup → retry until it does.
+func (k *K8sBackend) controllerOwnerRefs(ctx context.Context) []metav1.OwnerReference {
+	if k.ownerRefs == nil {
+		return nil
+	}
+	k.ownerRefs.mu.Lock()
+	defer k.ownerRefs.mu.Unlock()
+	if k.ownerRefs.loaded {
+		return k.ownerRefs.data
+	}
+
+	pod, err := k.getCurrentPod(ctx)
+	if err != nil {
+		reason := classifyAPIError(err)
+		log.FromContext(ctx).WithName("k8s-backend").Info(
+			"controller Pod lookup failed; ownerReferences will be omitted for this Create (retry on next)",
+			"reason", reason, "err", err.Error())
+		return nil
+	}
 	if pod == nil {
 		return nil
 	}
-	return append([]corev1.Toleration(nil), pod.Spec.Tolerations...)
+	refs := filterOutReplicaSetOwners(pod.OwnerReferences)
+	k.ownerRefs.data = refs
+	k.ownerRefs.loaded = true
+	return refs
 }
 
-func (k *K8sBackend) getCurrentPodImagePullSecrets(ctx context.Context) []corev1.LocalObjectReference {
-	pod := k.getCurrentPod(ctx)
-	if pod == nil {
+// filterOutReplicaSetOwners drops OwnerReferences whose Kind is "ReplicaSet"
+// so that child Pod lifetime is not bound to an ephemeral ReplicaSet that
+// Deployment recreates on every rollout. StatefulSet / CloneSet / custom
+// workload ownerRefs are preserved verbatim.
+func filterOutReplicaSetOwners(refs []metav1.OwnerReference) []metav1.OwnerReference {
+	if len(refs) == 0 {
 		return nil
 	}
-	return append([]corev1.LocalObjectReference(nil), pod.Spec.ImagePullSecrets...)
+	out := make([]metav1.OwnerReference, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Kind == "ReplicaSet" {
+			continue
+		}
+		out = append(out, ref)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func classifyAPIError(err error) string {
+	switch {
+	case apierrors.IsNotFound(err):
+		return "not-found"
+	case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
+		return "forbidden"
+	case apierrors.IsTimeout(err), apierrors.IsServerTimeout(err), apierrors.IsServiceUnavailable(err):
+		return "transient"
+	default:
+		return "unknown"
+	}
+}
+
+// buildDefaultResources constructs the backend-level default ResourceRequirements
+// that apply when neither the CreateRequest nor the agent pod template
+// specifies resources. Request side is fixed at "100m" / "256Mi" to match
+// historical behavior; limits come from K8sConfig.WorkerCPU / WorkerMemory.
+func buildDefaultResources(workerCPU, workerMemory string) corev1.ResourceRequirements {
+	if workerCPU == "" {
+		workerCPU = "1000m"
+	}
+	if workerMemory == "" {
+		workerMemory = "2Gi"
+	}
+	return corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(workerCPU),
+			corev1.ResourceMemory: resource.MustParse(workerMemory),
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+}
+
+// mergeResourceOverrides layers a ResourceRequirements override (from
+// CreateRequest.Resources) on top of defaults, field by field.
+func mergeResourceOverrides(defaults corev1.ResourceRequirements, override *ResourceRequirements) corev1.ResourceRequirements {
+	out := *defaults.DeepCopy()
+	if override == nil {
+		return out
+	}
+	if override.CPULimit != "" {
+		out.Limits[corev1.ResourceCPU] = resource.MustParse(override.CPULimit)
+	}
+	if override.MemoryLimit != "" {
+		out.Limits[corev1.ResourceMemory] = resource.MustParse(override.MemoryLimit)
+	}
+	if override.CPURequest != "" {
+		out.Requests[corev1.ResourceCPU] = resource.MustParse(override.CPURequest)
+	}
+	if override.MemoryRequest != "" {
+		out.Requests[corev1.ResourceMemory] = resource.MustParse(override.MemoryRequest)
+	}
+	return out
 }
 
 // mergeOSSRegionFromProcessEnv sets HICLAW_FS_BUCKET and HICLAW_REGION when the client
