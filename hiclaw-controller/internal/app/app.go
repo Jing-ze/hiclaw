@@ -264,7 +264,7 @@ func (s *ossControllerCredSource) Resolve(ctx context.Context) (oss.Credentials,
 }
 
 func (a *App) initBackends(_ context.Context) error {
-	workerBackends := buildWorkerBackends(a.cfg)
+	workerBackends := buildWorkerBackends(a.cfg, a.scheme)
 	a.registry = backend.NewRegistry(workerBackends)
 	return nil
 }
@@ -599,9 +599,12 @@ func (a *App) startInCluster() (*rest.Config, error) {
 // =========================================================================
 
 // buildWorkerBackends selects the worker backend(s) based on kube mode.
+// The scheme is threaded into the k8s backend so it can stamp CR-to-Pod
+// controller OwnerReferences (see backend.CreateRequest.Owner); docker
+// backend doesn't need it.
 // Gateway selection is handled in initInfraClients via gateway.Client,
 // so this function only cares about worker runtimes (docker vs k8s).
-func buildWorkerBackends(cfg *config.Config) []backend.WorkerBackend {
+func buildWorkerBackends(cfg *config.Config, scheme *runtime.Scheme) []backend.WorkerBackend {
 	var workers []backend.WorkerBackend
 
 	if cfg.KubeMode == "embedded" {
@@ -615,7 +618,7 @@ func buildWorkerBackends(cfg *config.Config) []backend.WorkerBackend {
 
 	switch effectiveBackend {
 	case "k8s":
-		if k8s, err := backend.NewK8sBackend(cfg.K8sConfig(), cfg.ContainerPrefix); err != nil {
+		if k8s, err := backend.NewK8sBackend(cfg.K8sConfig(), cfg.ContainerPrefix, scheme); err != nil {
 			log.Printf("[WARN] Failed to create K8s backend: %v", err)
 		} else {
 			workers = append(workers, k8s)
