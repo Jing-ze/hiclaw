@@ -128,13 +128,14 @@ func TestMain(m *testing.M) {
 	}
 
 	teamReconciler := &controller.TeamReconciler{
-		Client:      mgr.GetClient(),
-		Provisioner: mockProv,
-		Deployer:    mockDeploy,
-		Backend:     workerBackendRegistry,
-		EnvBuilder:  mockEnv,
-		Legacy:      testLegacy,
-		AgentFSDir:  agentFSDir,
+		Client:         mgr.GetClient(),
+		Provisioner:    mockProv,
+		Deployer:       mockDeploy,
+		Backend:        workerBackendRegistry,
+		EnvBuilder:     mockEnv,
+		Legacy:         testLegacy,
+		AgentFSDir:     agentFSDir,
+		ControllerName: "test-ctl",
 	}
 	if err := teamReconciler.SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup TeamReconciler: %v", err))

@@ -632,6 +632,118 @@ func TestWorkerDelete_ProvisionFailed_StillCleans(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CR Labels → Pod Labels propagation
+// ---------------------------------------------------------------------------
+
+// TestWorkerLabels_PropagateFromMetadataAndSpecToBackendCreate walks the
+// full reconcile pipeline end-to-end: API server -> informer ->
+// reconciler -> mock backend, and asserts the CreateRequest.Labels the
+// backend actually receives reflects the documented four-layer merge
+// (CR metadata.labels, CR spec.labels, controller system labels) with
+// spec beating metadata on key collision and system always beating
+// user-supplied reserved keys. This is the integration-test complement
+// to the workerMemberContext unit tests — it proves the merge is
+// preserved through CRD serialization, DeepCopy, and the entire member
+// reconcile path rather than just at the helper level.
+func TestWorkerLabels_PropagateFromMetadataAndSpecToBackendCreate(t *testing.T) {
+	resetMocks()
+
+	var (
+		capMu   = newLabelCapture()
+		wantCtl = "test-ctl"
+	)
+	mockBackend.CreateFn = capMu.CreateFn()
+
+	name := fixtures.UniqueName("labels-worker")
+	w := fixtures.NewTestWorker(name)
+	w.ObjectMeta.Labels = map[string]string{
+		"owner": "alice",
+		"team":  "metadata-team",
+	}
+	w.Spec.Labels = map[string]string{
+		"env":                   "prod",
+		"team":                  "spec-team",      // overrides metadata
+		v1beta1.LabelController: "spec-attacker",  // must be overridden by system
+		"hiclaw.io/worker":      "spec-fake-name", // must be overridden by system
+	}
+
+	if err := k8sClient.Create(ctx, w); err != nil {
+		t.Fatalf("create Worker: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, w) })
+
+	waitForRunning(t, w)
+
+	labels := capMu.LabelsFor(name)
+	if labels == nil {
+		t.Fatalf("backend Create was never called for %q (captured=%v)", name, capMu.Keys())
+	}
+
+	assertLabel(t, labels, "owner", "alice")                   // metadata propagated
+	assertLabel(t, labels, "env", "prod")                      // spec propagated
+	assertLabel(t, labels, "team", "spec-team")                // spec beats metadata
+	assertLabel(t, labels, v1beta1.LabelController, wantCtl)   // system beats user
+	assertLabel(t, labels, "hiclaw.io/worker", name)           // system beats user
+	assertLabel(t, labels, "hiclaw.io/role", "standalone")     // system
+}
+
+// TestWorkerLabels_MetadataLabelsChangeDoesNotRecreatePod verifies the
+// documented non-disruption contract: changing only metadata.labels
+// after the Pod is Running must NOT trigger backend.Delete +
+// backend.Create (which would otherwise cause an unnecessary Matrix
+// session reset and mid-task disruption). Only spec changes — which
+// bump Generation — are allowed to recreate Pods.
+func TestWorkerLabels_MetadataLabelsChangeDoesNotRecreatePod(t *testing.T) {
+	resetMocks()
+
+	name := fixtures.UniqueName("labels-noop")
+	w := fixtures.NewTestWorker(name)
+
+	if err := k8sClient.Create(ctx, w); err != nil {
+		t.Fatalf("create Worker: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, w) })
+
+	waitForRunning(t, w)
+
+	// Snapshot create/delete counts at steady state.
+	createsBefore, deletesBefore, _, _, _ := mockBackend.CallSnapshot()
+
+	// Patch only metadata.labels; this must not bump Generation and
+	// therefore must not trigger a recreate.
+	updateSpecField(t, w, func(got *v1beta1.Worker) {
+		if got.ObjectMeta.Labels == nil {
+			got.ObjectMeta.Labels = map[string]string{}
+		}
+		got.ObjectMeta.Labels["newly-added"] = "v1"
+	})
+
+	// Force at least one extra reconcile pass so the controller observes
+	// the metadata change; triggerReconcile bumps an annotation which
+	// fires the watch but still doesn't bump Generation.
+	triggerReconcile(t, w)
+
+	// Let a few reconcile cycles flush.
+	time.Sleep(2 * time.Second)
+
+	createsAfter, deletesAfter, _, _, _ := mockBackend.CallSnapshot()
+	if len(createsAfter) != len(createsBefore) {
+		t.Errorf("metadata.labels change triggered backend.Create: before=%d after=%d", len(createsBefore), len(createsAfter))
+	}
+	if len(deletesAfter) != len(deletesBefore) {
+		t.Errorf("metadata.labels change triggered backend.Delete: before=%d after=%d", len(deletesBefore), len(deletesAfter))
+	}
+
+	var refreshed v1beta1.Worker
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(w), &refreshed); err != nil {
+		t.Fatalf("get Worker: %v", err)
+	}
+	if refreshed.ObjectMeta.Labels["newly-added"] != "v1" {
+		t.Fatalf("metadata.labels not persisted: %v", refreshed.ObjectMeta.Labels)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 

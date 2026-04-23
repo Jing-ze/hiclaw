@@ -711,6 +711,121 @@ func TestTeamUpdate_AddWorker_DoesNotRecreateExisting(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CR Labels → Pod Labels propagation (Team)
+// ---------------------------------------------------------------------------
+
+// TestTeamLabels_PropagateAndIsolatePerMember walks the full Team
+// reconcile pipeline end-to-end and asserts three things at once for
+// the captured backend.CreateRequest.Labels:
+//   - Team.metadata.labels fans out to the leader AND every worker Pod.
+//   - Team.spec.leader.labels lands ONLY on the leader; per-member
+//     workers[i].labels land ONLY on that worker and do not leak to
+//     other workers or the leader.
+//   - Controller-forced system labels (hiclaw.io/controller,
+//     hiclaw.io/team, hiclaw.io/role) always win over user-supplied
+//     values, including reserved keys stuffed into any of the three
+//     user layers (metadata, leader.labels, workers[].labels).
+func TestTeamLabels_PropagateAndIsolatePerMember(t *testing.T) {
+	resetMocks()
+
+	cap := newLabelCapture()
+	mockBackend.CreateFn = cap.CreateFn()
+
+	name := fixtures.UniqueName("labels-team")
+	leaderName := name + "-lead"
+	devName := name + "-dev"
+	qaName := name + "-qa"
+
+	team := fixtures.NewTestTeam(name, leaderName, devName, qaName)
+	team.ObjectMeta.Labels = map[string]string{
+		"squad":  "alpha",
+		"region": "us-west",
+		// Reserved-key attempts at the team-metadata layer.
+		v1beta1.LabelController: "metadata-attacker",
+	}
+	team.Spec.Leader.Labels = map[string]string{
+		"role-hint": "planner",
+		"squad":     "leader-squad", // should beat team metadata for leader
+	}
+	// Per-member labels — each worker gets its own disjoint set so we
+	// can detect cross-member leakage.
+	for i := range team.Spec.Workers {
+		switch team.Spec.Workers[i].Name {
+		case devName:
+			team.Spec.Workers[i].Labels = map[string]string{
+				"skill":            "rust",
+				"hiclaw.io/role":   "evil", // reserved-key override attempt
+			}
+		case qaName:
+			team.Spec.Workers[i].Labels = map[string]string{
+				"skill": "go",
+			}
+		}
+	}
+
+	if err := k8sClient.Create(ctx, team); err != nil {
+		t.Fatalf("create Team: %v", err)
+	}
+	t.Cleanup(func() { _ = deleteAndWait(t, team) })
+
+	waitForTeamPhase(t, team, "Active")
+
+	leaderLabels := cap.LabelsFor(leaderName)
+	devLabels := cap.LabelsFor(devName)
+	qaLabels := cap.LabelsFor(qaName)
+	if leaderLabels == nil || devLabels == nil || qaLabels == nil {
+		t.Fatalf("missing captured create: leader=%v dev=%v qa=%v (captured=%v)",
+			leaderLabels != nil, devLabels != nil, qaLabels != nil, cap.Keys())
+	}
+
+	// Team-wide metadata fans out to every member.
+	for _, pair := range []struct {
+		who    string
+		labels map[string]string
+	}{
+		{"leader", leaderLabels},
+		{"dev", devLabels},
+		{"qa", qaLabels},
+	} {
+		if got := pair.labels["region"]; got != "us-west" {
+			t.Errorf("%s missing team metadata region=us-west: %v", pair.who, pair.labels)
+		}
+	}
+
+	// Per-member beats team-wide on collision (leader).
+	assertLabel(t, leaderLabels, "squad", "leader-squad")
+	// Non-leader members inherit team-wide value since they do not
+	// override it.
+	assertLabel(t, devLabels, "squad", "alpha")
+	assertLabel(t, qaLabels, "squad", "alpha")
+
+	// Leader-only label does not leak to workers.
+	assertLabel(t, leaderLabels, "role-hint", "planner")
+	if _, ok := devLabels["role-hint"]; ok {
+		t.Errorf("dev leaked leader role-hint: %v", devLabels)
+	}
+	if _, ok := qaLabels["role-hint"]; ok {
+		t.Errorf("qa leaked leader role-hint: %v", qaLabels)
+	}
+
+	// Per-worker labels do not leak across workers or to the leader.
+	assertLabel(t, devLabels, "skill", "rust")
+	assertLabel(t, qaLabels, "skill", "go")
+	if _, ok := leaderLabels["skill"]; ok {
+		t.Errorf("leader leaked worker skill label: %v", leaderLabels)
+	}
+
+	// System labels always win on collision.
+	for _, labels := range []map[string]string{leaderLabels, devLabels, qaLabels} {
+		assertLabel(t, labels, v1beta1.LabelController, "test-ctl")
+		assertLabel(t, labels, "hiclaw.io/team", name)
+	}
+	assertLabel(t, leaderLabels, "hiclaw.io/role", "team_leader")
+	assertLabel(t, devLabels, "hiclaw.io/role", "worker")
+	assertLabel(t, qaLabels, "hiclaw.io/role", "worker")
+}
+
+// ---------------------------------------------------------------------------
 // Team — helpers
 // ---------------------------------------------------------------------------
 
