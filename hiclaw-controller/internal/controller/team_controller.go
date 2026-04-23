@@ -890,7 +890,7 @@ func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						}},
 					}
 				}),
-				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/team")),
+				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/team", r.ControllerName)),
 			)
 		}
 	}

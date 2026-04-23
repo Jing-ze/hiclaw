@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
+	"github.com/hiclaw/hiclaw-controller/internal/auth"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -149,6 +150,11 @@ type SecretCredentialStore struct {
 	// credential Secret via hiclaw.io/controller so multi-instance
 	// deployments sharing a namespace can filter by owner.
 	ControllerName string
+	// ResourcePrefix is the tenant prefix used to derive the decorative
+	// "app" label on the Secret (via WorkerAppLabel()). Empty falls back
+	// to auth.DefaultResourcePrefix — keeps the Secret's "app" value
+	// aligned with the Pod and ServiceAccount created for the same worker.
+	ResourcePrefix auth.ResourcePrefix
 }
 
 func (s *SecretCredentialStore) secretName(workerName string) string {
@@ -177,7 +183,7 @@ func (s *SecretCredentialStore) Save(ctx context.Context, workerName string, cre
 			Name:      s.secretName(workerName),
 			Namespace: s.Namespace,
 			Labels: map[string]string{
-				"app":                   "hiclaw",
+				"app":                   s.ResourcePrefix.WorkerAppLabel(),
 				"hiclaw.io/worker":      workerName,
 				v1beta1.LabelController: s.ControllerName,
 			},

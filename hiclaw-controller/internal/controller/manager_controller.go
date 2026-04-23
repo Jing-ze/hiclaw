@@ -161,7 +161,7 @@ func (r *ManagerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						}},
 					}
 				}),
-				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/manager")),
+				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/manager", r.ControllerName)),
 			)
 		}
 	}

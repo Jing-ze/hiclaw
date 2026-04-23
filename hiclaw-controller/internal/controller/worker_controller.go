@@ -323,7 +323,7 @@ func (r *WorkerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						}},
 					}
 				}),
-				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/worker")),
+				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/worker", r.ControllerName)),
 			)
 		}
 	}
@@ -332,19 +332,34 @@ func (r *WorkerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // podLifecyclePredicates filters Pod events to only trigger reconciliation on
-// create, delete, or phase transitions. labelKey is the pod label used to
-// identify which CR owns the pod (e.g. "hiclaw.io/worker", "hiclaw.io/team",
-// "hiclaw.io/manager").
-func podLifecyclePredicates(labelKey string) predicate.Predicate {
+// create, delete, or phase transitions. A pod is considered "ours" only when
+// it carries both:
+//
+//   - labelKey (one of "hiclaw.io/worker" / "hiclaw.io/team" /
+//     "hiclaw.io/manager") with a non-empty value — identifying which CR
+//     kind owns the pod.
+//   - hiclaw.io/controller == controllerName — identifying which controller
+//     instance owns the pod.
+//
+// The controller filter is defense-in-depth against the informer cache label
+// selector configured in app.startInCluster (opts.Cache.ByObject for Pods).
+// If a future watch source is wired without that cache filter, this predicate
+// still prevents cross-instance reconcile when two hiclaw-controller
+// releases share a namespace.
+func podLifecyclePredicates(labelKey, controllerName string) predicate.Predicate {
+	matches := func(obj client.Object) bool {
+		l := obj.GetLabels()
+		return l[labelKey] != "" && l[v1beta1.LabelController] == controllerName
+	}
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			return e.Object.GetLabels()[labelKey] != ""
+			return matches(e.Object)
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			return e.Object.GetLabels()[labelKey] != ""
+			return matches(e.Object)
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			if e.ObjectNew.GetLabels()[labelKey] == "" {
+			if !matches(e.ObjectNew) {
 				return false
 			}
 			oldPod, ok1 := e.ObjectOld.(*corev1.Pod)
