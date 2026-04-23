@@ -64,6 +64,18 @@ spec:
                     notifyChannel:
                       type: string
                       description: "Notification channel (default: admin-dm)"
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: >
+                    User-defined Pod labels stamped onto the manager's Pod.
+                    Merged on top of the ConfigMap-based pod-template overlay
+                    and CR metadata.labels, and below controller-forced
+                    system labels (hiclaw.io/controller, hiclaw.io/manager,
+                    hiclaw.io/role, hiclaw.io/runtime, app). Entries whose
+                    keys collide with those system labels are silently
+                    overridden.
                 accessEntries:
                   type: array
                   description: >
