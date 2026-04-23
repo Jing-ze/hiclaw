@@ -232,8 +232,8 @@ func LoadConfig() *Config {
 		HigressBaseURL:    envOrDefault("HICLAW_AI_GATEWAY_ADMIN_URL", "http://127.0.0.1:8001"),
 		HigressCookieFile: os.Getenv("HIGRESS_COOKIE_FILE"),
 		// Higress and Matrix share the same admin credentials.
-		HigressAdminUser:     envOrDefault("HICLAW_ADMIN_USER", "admin"),
-		HigressAdminPassword: envOrDefault("HICLAW_ADMIN_PASSWORD", "admin"),
+		HigressAdminUser:     os.Getenv("HICLAW_ADMIN_USER"),
+		HigressAdminPassword: os.Getenv("HICLAW_ADMIN_PASSWORD"),
 
 		WorkerBackend: firstNonEmpty(
 			os.Getenv("HICLAW_WORKER_BACKEND"),
@@ -274,8 +274,8 @@ func LoadConfig() *Config {
 		MatrixServerURL:         envOrDefault("HICLAW_MATRIX_URL", "http://matrix-local.hiclaw.io:8080"),
 		MatrixDomain:            envOrDefault("HICLAW_MATRIX_DOMAIN", "matrix-local.hiclaw.io:8080"),
 		MatrixRegistrationToken: envOrDefault("HICLAW_MATRIX_REGISTRATION_TOKEN", os.Getenv("HICLAW_REGISTRATION_TOKEN")),
-		MatrixAdminUser:         envOrDefault("HICLAW_ADMIN_USER", "admin"),
-		MatrixAdminPassword:     envOrDefault("HICLAW_ADMIN_PASSWORD", "admin"),
+		MatrixAdminUser:         os.Getenv("HICLAW_ADMIN_USER"),
+		MatrixAdminPassword:     os.Getenv("HICLAW_ADMIN_PASSWORD"),
 		MatrixE2EE:              os.Getenv("HICLAW_MATRIX_E2EE") == "1" || os.Getenv("HICLAW_MATRIX_E2EE") == "true",
 
 		OSSStoragePrefix: envOrDefault("HICLAW_STORAGE_PREFIX", "hiclaw/hiclaw-storage"),
@@ -307,7 +307,7 @@ func LoadConfig() *Config {
 			ControllerURL: os.Getenv("HICLAW_CONTROLLER_URL"),
 			AIGatewayURL:  envOrDefault("HICLAW_AI_GATEWAY_URL", "http://aigw-local.hiclaw.io:8080"),
 			MatrixURL:     envOrDefault("HICLAW_MATRIX_URL", "http://matrix-local.hiclaw.io:8080"),
-			AdminUser:     envOrDefault("HICLAW_ADMIN_USER", "admin"),
+			AdminUser:     os.Getenv("HICLAW_ADMIN_USER"),
 			YoloMode:      envBool("HICLAW_YOLO"),
 			MatrixDebug:   envBool("HICLAW_MATRIX_DEBUG"),
 
