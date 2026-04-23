@@ -603,6 +603,26 @@ func (p *Provisioner) EnsureManagerGatewayAuth(ctx context.Context, managerName,
 	return nil
 }
 
+// EnsureWorkerGatewayAuth ensures the Worker's gateway consumer exists and is
+// authorized on AI routes. Called during controller restart / member reconcile
+// to defensively restore auth that may have been lost (e.g. if the Higress
+// route was rewritten, or after upgrade with fresh Higress state). Mirrors
+// EnsureManagerGatewayAuth but uses the worker-scoped consumer name.
+func (p *Provisioner) EnsureWorkerGatewayAuth(ctx context.Context, workerName, gatewayKey string) error {
+	consumerName := "worker-" + workerName
+	_, err := p.gateway.EnsureConsumer(ctx, gateway.ConsumerRequest{
+		Name:          consumerName,
+		CredentialKey: gatewayKey,
+	})
+	if err != nil {
+		return fmt.Errorf("ensure consumer: %w", err)
+	}
+	if err := p.gateway.AuthorizeAIRoutes(ctx, consumerName); err != nil {
+		return fmt.Errorf("authorize AI routes: %w", err)
+	}
+	return nil
+}
+
 // ReconcileMCPAuth reauthorizes MCP servers for a consumer. Returns the list of
 // successfully authorized server names.
 func (p *Provisioner) ReconcileMCPAuth(ctx context.Context, consumerName string, mcpServers []string) ([]string, error) {

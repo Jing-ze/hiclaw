@@ -136,6 +136,18 @@ func ReconcileMemberInfra(ctx context.Context, d MemberDeps, m MemberContext, st
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("refresh credentials: %w", err)
 		}
+
+		// Defensively re-authorize the worker on AI routes. Mirrors the
+		// Manager restart path: if the Higress skeleton was ever rewritten
+		// (historically by the Initializer's EnsureAIRoute, or by a fresh
+		// Higress state after upgrade), allowedConsumers may have been
+		// reset to [] and the worker would stay locked out with 403s until
+		// the next spec-change event. Surfacing errors lets controller-
+		// runtime re-queue with backoff.
+		if err := d.Provisioner.EnsureWorkerGatewayAuth(ctx, m.Name, refreshResult.GatewayKey); err != nil {
+			return reconcile.Result{}, fmt.Errorf("restore worker gateway auth: %w", err)
+		}
+
 		state.MatrixUserID = m.ExistingMatrixUserID
 		state.RoomID = m.ExistingRoomID
 		state.ProvResult = &service.WorkerProvisionResult{

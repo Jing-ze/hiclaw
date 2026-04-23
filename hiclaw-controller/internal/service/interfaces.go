@@ -12,6 +12,7 @@ type WorkerProvisioner interface {
 	ProvisionWorker(ctx context.Context, req WorkerProvisionRequest) (*WorkerProvisionResult, error)
 	DeprovisionWorker(ctx context.Context, req WorkerDeprovisionRequest) error
 	RefreshCredentials(ctx context.Context, workerName string) (*RefreshResult, error)
+	EnsureWorkerGatewayAuth(ctx context.Context, workerName, gatewayKey string) error
 	ReconcileMCPAuth(ctx context.Context, consumerName string, mcpServers []string) ([]string, error)
 	ReconcileExpose(ctx context.Context, workerName string, desired []v1beta1.ExposePort, current []v1beta1.ExposedPortStatus) ([]v1beta1.ExposedPortStatus, error)
 	EnsureServiceAccount(ctx context.Context, workerName string) error
