@@ -656,18 +656,25 @@ func buildDesiredMembers(t *v1beta1.Team, controllerName string) []MemberContext
 		}
 		return false
 	}
-	// memberLabels returns the base PodLabels for a team member, optionally
-	// stamped with hiclaw.io/controller so the resulting Pod lands inside
-	// the owning controller's label-scoped informer cache.
-	memberLabels := func(role MemberRole) map[string]string {
-		labels := map[string]string{
-			"hiclaw.io/team": t.Name,
-			"hiclaw.io/role": role.String(),
-		}
-		if controllerName != "" {
-			labels[v1beta1.LabelController] = controllerName
-		}
-		return labels
+	// memberLabels returns the base PodLabels for a team member stamped
+	// with the owning controller's identity. The four layers merged here
+	// (low-to-high): Team.metadata.labels (team-wide defaults), the
+	// per-member spec.labels (perMemberLabels, overrides team-wide on
+	// collision), then the controller-forced system labels (highest).
+	// Controller system labels deliberately come last so any reserved
+	// key a user writes is silently overridden rather than rejected.
+	// In in-cluster mode controllerName is always non-empty (see
+	// Config.validate), so no defensive check is needed.
+	memberLabels := func(role MemberRole, perMemberLabels map[string]string) map[string]string {
+		return mergeLabels(
+			t.ObjectMeta.Labels,
+			perMemberLabels,
+			map[string]string{
+				"hiclaw.io/team":        t.Name,
+				"hiclaw.io/role":        role.String(),
+				v1beta1.LabelController: controllerName,
+			},
+		)
 	}
 	members := make([]MemberContext, 0, 1+len(t.Spec.Workers))
 
@@ -684,7 +691,7 @@ func buildDesiredMembers(t *v1beta1.Team, controllerName string) []MemberContext
 		TeamName:          t.Name,
 		TeamLeaderName:    "",
 		TeamAdminMatrixID: teamAdminMatrixID(t),
-		PodLabels:         memberLabels(RoleTeamLeader),
+		PodLabels:         memberLabels(RoleTeamLeader, t.Spec.Leader.Labels),
 		Owner:             t,
 	})
 
@@ -702,7 +709,7 @@ func buildDesiredMembers(t *v1beta1.Team, controllerName string) []MemberContext
 			TeamName:          t.Name,
 			TeamLeaderName:    t.Spec.Leader.Name,
 			TeamAdminMatrixID: teamAdminMatrixID(t),
-			PodLabels:         memberLabels(RoleTeamWorker),
+			PodLabels:         memberLabels(RoleTeamWorker, w.Labels),
 			Owner:             t,
 		})
 	}
@@ -766,8 +773,8 @@ func memberSpecChanged(t *v1beta1.Team, role MemberRole, name string) bool {
 // JSON key churn.
 func hashMemberSourceSpec(t *v1beta1.Team, role MemberRole, name string) string {
 	type leaderInput struct {
-		Leader     v1beta1.LeaderSpec          `json:"leader"`
-		TeamPolicy *v1beta1.ChannelPolicySpec  `json:"teamPolicy,omitempty"`
+		Leader     v1beta1.LeaderSpec         `json:"leader"`
+		TeamPolicy *v1beta1.ChannelPolicySpec `json:"teamPolicy,omitempty"`
 	}
 	type workerInput struct {
 		Worker       v1beta1.TeamWorkerSpec     `json:"worker"`
@@ -894,7 +901,7 @@ func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						}},
 					}
 				}),
-				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/team")),
+				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/team", r.ControllerName)),
 			)
 		}
 	}

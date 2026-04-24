@@ -63,13 +63,17 @@ func (p ResourcePrefix) AdminName() string {
 }
 
 // WorkerAppLabel returns the Pod "app" label value for workers, e.g.
-// "hiclaw-worker". Used as both label value and List selector filter.
+// "hiclaw-worker". Purely decorative — useful for ad-hoc kubectl grouping
+// (`kubectl get pod -l app=hiclaw-worker`) and external dashboards. No
+// in-tree code selects on this label; isolation between controller
+// instances is done via hiclaw.io/controller. Kept stable for external
+// tooling compatibility.
 func (p ResourcePrefix) WorkerAppLabel() string {
 	return p.effective() + "worker"
 }
 
 // ManagerAppLabel returns the Pod "app" label value for managers, e.g.
-// "hiclaw-manager".
+// "hiclaw-manager". Same decorative-only semantics as WorkerAppLabel.
 func (p ResourcePrefix) ManagerAppLabel() string {
 	return p.effective() + "manager"
 }

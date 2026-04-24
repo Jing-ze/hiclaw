@@ -1079,6 +1079,107 @@ func TestManagerWelcome_LLMAuthNotReady_RequeuesUntilPropagated(t *testing.T) {
 // Manager test helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CR Labels → Pod Labels propagation
+// ---------------------------------------------------------------------------
+
+// TestManagerLabels_PropagateFromMetadataAndSpecToBackendCreate walks
+// the Manager reconcile pipeline end-to-end and asserts the labels
+// handed to backend.Create reflect the four-layer merge: CR metadata
+// and spec labels both propagate, spec beats metadata on collision,
+// and controller-forced system labels (app, hiclaw.io/controller,
+// hiclaw.io/manager, hiclaw.io/role, hiclaw.io/runtime) override any
+// reserved keys a user stuffed into either layer.
+func TestManagerLabels_PropagateFromMetadataAndSpecToBackendCreate(t *testing.T) {
+	resetManagerMocks()
+
+	capMu := newLabelCapture()
+	mockMgrBackend.CreateFn = capMu.CreateFn()
+
+	mgrName := fixtures.UniqueName("labels-mgr")
+	mgr := fixtures.NewTestManager(mgrName)
+	mgr.ObjectMeta.Labels = map[string]string{
+		"owner": "alice",
+		"tier":  "metadata-tier",
+	}
+	mgr.Spec.Labels = map[string]string{
+		"env":                   "prod",
+		"tier":                  "spec-tier", // overrides metadata
+		v1beta1.LabelController: "spec-attacker",
+		"app":                   "spoofed-app",
+	}
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("create Manager: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, mgr) })
+
+	waitForManagerRunning(t, mgr)
+
+	// Manager containers are named via managerContainerName(name), which
+	// is what the backend sees in req.Name.
+	containerName := managerContainerName(mgrName)
+	labels := capMu.LabelsFor(containerName)
+	if labels == nil {
+		// Fall back to capturing by CR name for robustness across
+		// prefix changes.
+		labels = capMu.LabelsFor(mgrName)
+	}
+	if labels == nil {
+		t.Fatalf("backend Create was never called (captured=%v)", capMu.Keys())
+	}
+
+	assertLabel(t, labels, "owner", "alice")
+	assertLabel(t, labels, "env", "prod")
+	assertLabel(t, labels, "tier", "spec-tier")
+	assertLabel(t, labels, v1beta1.LabelController, "test-ctl")
+	assertLabel(t, labels, "hiclaw.io/manager", mgrName)
+	assertLabel(t, labels, "hiclaw.io/role", "manager")
+	// app label must be the ResourcePrefix-derived value, not the
+	// user-supplied "spoofed-app"; ManagerReconciler wired in suite
+	// construction uses the default (empty) ResourcePrefix which maps
+	// to "hiclaw-manager".
+	if got := labels["app"]; got == "spoofed-app" || got == "" {
+		t.Errorf("app label not set by controller (got %q, full=%v)", got, labels)
+	}
+}
+
+// TestManagerLabels_MetadataLabelsChangeDoesNotRecreatePod verifies
+// the same non-disruption contract as the Worker equivalent: patching
+// only metadata.labels must NOT trigger backend.Delete/Create.
+func TestManagerLabels_MetadataLabelsChangeDoesNotRecreatePod(t *testing.T) {
+	resetManagerMocks()
+
+	mgrName := fixtures.UniqueName("labels-mgr-noop")
+	mgr := fixtures.NewTestManager(mgrName)
+
+	if err := k8sClient.Create(ctx, mgr); err != nil {
+		t.Fatalf("create Manager: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, mgr) })
+
+	waitForManagerRunning(t, mgr)
+
+	createsBefore, deletesBefore, _, _, _ := mockMgrBackend.CallSnapshot()
+
+	updateManagerSpecField(t, mgr, func(got *v1beta1.Manager) {
+		if got.ObjectMeta.Labels == nil {
+			got.ObjectMeta.Labels = map[string]string{}
+		}
+		got.ObjectMeta.Labels["newly-added"] = "v1"
+	})
+	triggerManagerReconcile(t, mgr)
+	time.Sleep(2 * time.Second)
+
+	createsAfter, deletesAfter, _, _, _ := mockMgrBackend.CallSnapshot()
+	if len(createsAfter) != len(createsBefore) {
+		t.Errorf("metadata.labels change triggered backend.Create: before=%d after=%d", len(createsBefore), len(createsAfter))
+	}
+	if len(deletesAfter) != len(deletesBefore) {
+		t.Errorf("metadata.labels change triggered backend.Delete: before=%d after=%d", len(deletesBefore), len(deletesAfter))
+	}
+}
+
 // managerContainerName mirrors the controller's naming logic for tests.
 func managerContainerName(name string) string {
 	if name == "default" {

@@ -26,6 +26,7 @@ import (
 	"github.com/hiclaw/hiclaw-controller/internal/service"
 	"github.com/hiclaw/hiclaw-controller/internal/store"
 	"github.com/hiclaw/hiclaw-controller/internal/watcher"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -374,7 +375,12 @@ func (a *App) initServiceLayer(_ context.Context) error {
 
 	var credStore service.CredentialStore
 	if cfg.KubeMode == "incluster" && a.k8sClient != nil {
-		credStore = &service.SecretCredentialStore{Client: a.k8sClient, Namespace: a.namespace}
+		credStore = &service.SecretCredentialStore{
+			Client:         a.k8sClient,
+			Namespace:      a.namespace,
+			ControllerName: cfg.ControllerName,
+			ResourcePrefix: authpkg.ResourcePrefix(cfg.ResourcePrefix),
+		}
 	} else {
 		credStore = &service.FileCredentialStore{Dir: cfg.CredsDir()}
 	}
@@ -391,6 +397,7 @@ func (a *App) initServiceLayer(_ context.Context) error {
 		MatrixDomain:      cfg.MatrixDomain,
 		AdminUser:         cfg.MatrixAdminUser,
 		ResourcePrefix:    authpkg.ResourcePrefix(cfg.ResourcePrefix),
+		ControllerName:    cfg.ControllerName,
 		ManagerPassword:   cfg.ManagerPassword,
 		ManagerGatewayKey: cfg.ManagerGatewayKey,
 		ManagerEnabled:    cfg.ManagerEnabled,
@@ -433,6 +440,7 @@ func (a *App) initReconcilers(_ context.Context) error {
 		ResourcePrefix: resourcePrefix,
 		Legacy:         a.legacy,
 		DefaultRuntime: a.cfg.DefaultWorkerRuntime,
+		ControllerName: a.cfg.ControllerName,
 	}).SetupWithManager(a.mgr); err != nil {
 		return fmt.Errorf("setup WorkerReconciler: %w", err)
 	}
@@ -469,6 +477,7 @@ func (a *App) initReconcilers(_ context.Context) error {
 		ResourcePrefix:   resourcePrefix,
 		ManagerResources: a.cfg.ManagerResources(),
 		DefaultRuntime:   a.cfg.ManagerRuntime,
+		ControllerName:   a.cfg.ControllerName,
 		UserLanguage:     a.cfg.UserLanguage,
 		UserTimezone:     a.cfg.UserTimezone,
 	}
@@ -587,24 +596,32 @@ func (a *App) startInCluster() (*rest.Config, error) {
 		opts.LeaderElectionNamespace = a.cfg.K8sNamespace
 	}
 
-	// Scope the informer cache to CRs owned by this controller instance.
-	// Cross-instance Worker/Manager/Team/Human CRs become invisible to the
-	// reconcilers, preventing double-reconcile when two hiclaw releases
-	// share a namespace. Writers (initializer, HTTP API, team reconciler,
-	// file watcher) stamp the same label on create, so this is closed loop.
+	// Scope the informer cache to objects owned by this controller instance.
+	// Cross-instance Worker/Manager/Team/Human CRs and their Pods become
+	// invisible to the reconcilers, preventing double-reconcile when two
+	// hiclaw releases share a namespace. Writers (initializer, HTTP API,
+	// team reconciler, file watcher) stamp the same label on create, so
+	// this is closed loop.
+	//
+	// Note: production Pod CRUD in K8sBackend still goes through the direct
+	// kubernetes.Interface client (see internal/backend/kubernetes.go), not
+	// the manager cache, so narrowing the cache only scopes the event
+	// stream feeding the Pod .Watches source — it does not affect Get/
+	// Create/Delete by exact name.
 	sel := labels.SelectorFromSet(labels.Set{v1beta1.LabelController: a.cfg.ControllerName})
 	opts.Cache.ByObject = map[crclient.Object]cache.ByObject{
 		&v1beta1.Worker{}:  {Label: sel},
 		&v1beta1.Manager{}: {Label: sel},
 		&v1beta1.Team{}:    {Label: sel},
 		&v1beta1.Human{}:   {Label: sel},
+		&corev1.Pod{}:      {Label: sel},
 	}
 
 	logger.Info("leader election configured",
 		"leaseID", leaseID,
 		"namespace", opts.LeaderElectionNamespace,
 		"controllerName", a.cfg.ControllerName,
-		"crLabelSelector", sel.String())
+		"cacheLabelSelector", sel.String())
 	var err error
 	a.mgr, err = ctrl.NewManager(restCfg, opts)
 	if err != nil {

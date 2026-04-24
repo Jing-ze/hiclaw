@@ -242,7 +242,22 @@ MANIFEST
 copy_to_agent "${WORK_DIR}/${TEST_WORKER}.zip" "${WORK_DIR}/${TEST_WORKER}.zip"
 
 REIMPORT_OUTPUT=$(exec_in_agent hiclaw apply worker --zip "${WORK_DIR}/${TEST_WORKER}.zip" --name "${TEST_WORKER}" 2>&1)
-assert_contains "${REIMPORT_OUTPUT}" "updated" "Re-import reports 'updated'"
+if echo "${REIMPORT_OUTPUT}" | grep -q "updated"; then
+    log_pass "Re-import reports 'updated'"
+else
+    log_fail "Re-import reports 'updated' (expected to contain: 'updated')"
+    log_info "---- REIMPORT_OUTPUT (hiclaw apply, stdout+stderr) begin ----"
+    if [ -n "${REIMPORT_OUTPUT}" ]; then
+        while IFS= read -r __reimport_line || [ -n "${__reimport_line}" ]; do
+            log_info "  ${__reimport_line}"
+        done <<EOF
+${REIMPORT_OUTPUT}
+EOF
+    else
+        log_info "  (empty)"
+    fi
+    log_info "---- REIMPORT_OUTPUT end ----"
+fi
 
 # Wait for controller to reconcile the update (poll for "worker updated" in logs)
 log_info "Waiting for controller to reconcile update..."
