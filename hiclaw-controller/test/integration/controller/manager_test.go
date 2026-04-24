@@ -845,6 +845,16 @@ func TestManagerUpdate_MCPServersChange_RewritesMcporterJSON(t *testing.T) {
 		m.Spec.McpServers = updatedServers
 	})
 
+	// The CRD defaults mcpServers[].transport to "http" server-side, so the
+	// value the reconciler observes for an entry with an empty Transport is
+	// "http". Normalize the expectation to match.
+	expectedServers := append([]v1beta1.MCPServer(nil), updatedServers...)
+	for i := range expectedServers {
+		if expectedServers[i].Transport == "" {
+			expectedServers[i].Transport = "http"
+		}
+	}
+
 	assertEventually(t, func() error {
 		var m v1beta1.Manager
 		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mgr), &m); err != nil {
@@ -858,9 +868,9 @@ func TestManagerUpdate_MCPServersChange_RewritesMcporterJSON(t *testing.T) {
 			if req.Name != mgrName {
 				continue
 			}
-			if len(req.McpServers) == len(updatedServers) {
+			if len(req.McpServers) == len(expectedServers) {
 				match := true
-				for i, s := range updatedServers {
+				for i, s := range expectedServers {
 					if req.McpServers[i].Name != s.Name || req.McpServers[i].URL != s.URL || req.McpServers[i].Transport != s.Transport {
 						match = false
 						break
@@ -871,7 +881,7 @@ func TestManagerUpdate_MCPServersChange_RewritesMcporterJSON(t *testing.T) {
 				}
 			}
 		}
-		return fmt.Errorf("DeployManagerConfig not called with updated McpServers=%v (calls=%d)", updatedServers, len(mockMgrDeploy.Calls.DeployManagerConfig))
+		return fmt.Errorf("DeployManagerConfig not called with updated McpServers=%v (calls=%d)", expectedServers, len(mockMgrDeploy.Calls.DeployManagerConfig))
 	})
 }
 
