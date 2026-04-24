@@ -46,6 +46,12 @@ type WorkerReconciler struct {
 	// "no operator preference" — backend.ResolveRuntime will fall back to
 	// "openclaw".
 	DefaultRuntime string
+
+	// ControllerName identifies this controller instance. Stamped on every
+	// Pod/SA/Secret created under this reconciler via the
+	// hiclaw.io/controller label so multiple controller instances sharing a
+	// namespace do not cross-watch each other's resources.
+	ControllerName string
 }
 
 func (r *WorkerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (retres reconcile.Result, reterr error) {
@@ -109,7 +115,7 @@ func (r *WorkerReconciler) reconcileNormal(ctx context.Context, w *v1beta1.Worke
 		ResourcePrefix: r.ResourcePrefix,
 		DefaultRuntime: r.DefaultRuntime,
 	}
-	mctx := workerMemberContext(w)
+	mctx := r.workerMemberContext(w)
 	state := &MemberState{}
 
 	if res, err := ReconcileMemberInfra(ctx, deps, mctx, state); err != nil || res.RequeueAfter > 0 {
@@ -158,7 +164,7 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, w *v1beta1.Worke
 		ResourcePrefix: r.ResourcePrefix,
 		DefaultRuntime: r.DefaultRuntime,
 	}
-	mctx := workerMemberContext(w)
+	mctx := r.workerMemberContext(w)
 
 	_ = ReconcileMemberDelete(ctx, deps, mctx)
 
@@ -221,8 +227,14 @@ func (r *WorkerReconciler) reconcileLegacy(ctx context.Context, w *v1beta1.Worke
 }
 
 // workerMemberContext translates a Worker CR into a MemberContext for the
-// shared member reconcile helpers.
-func workerMemberContext(w *v1beta1.Worker) MemberContext {
+// shared member reconcile helpers. The returned PodLabels are built by
+// layering four sources low-to-high: ConfigMap-based pod template (added
+// downstream by ApplyPodTemplate), the CR's metadata.labels, the CR's
+// spec.labels, and the controller-forced system labels (controller name
+// and member role). Controller-forced keys deliberately come last so
+// anything the user writes that collides (e.g. `hiclaw.io/controller`)
+// is silently overridden rather than rejected.
+func (r *WorkerReconciler) workerMemberContext(w *v1beta1.Worker) MemberContext {
 	role := roleForAnnotations(w.Annotations["hiclaw.io/role"], w.Annotations["hiclaw.io/team-leader"])
 	return MemberContext{
 		Name:               w.Name,
@@ -231,6 +243,14 @@ func workerMemberContext(w *v1beta1.Worker) MemberContext {
 		Spec:               w.Spec,
 		Generation:         w.Generation,
 		ObservedGeneration: w.Status.ObservedGeneration,
+		PodLabels: mergeLabels(
+			w.ObjectMeta.Labels,
+			w.Spec.Labels,
+			map[string]string{
+				v1beta1.LabelController: r.ControllerName,
+				"hiclaw.io/role":        role.String(),
+			},
+		),
 		// For Worker CR, spec change is detected the classic way:
 		// Generation increments on every spec mutation; ObservedGeneration
 		// is written after a successful reconcile. Status defaults to 0
@@ -311,7 +331,7 @@ func (r *WorkerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						}},
 					}
 				}),
-				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/worker")),
+				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/worker", r.ControllerName)),
 			)
 		}
 	}
@@ -320,19 +340,34 @@ func (r *WorkerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // podLifecyclePredicates filters Pod events to only trigger reconciliation on
-// create, delete, or phase transitions. labelKey is the pod label used to
-// identify which CR owns the pod (e.g. "hiclaw.io/worker", "hiclaw.io/team",
-// "hiclaw.io/manager").
-func podLifecyclePredicates(labelKey string) predicate.Predicate {
+// create, delete, or phase transitions. A pod is considered "ours" only when
+// it carries both:
+//
+//   - labelKey (one of "hiclaw.io/worker" / "hiclaw.io/team" /
+//     "hiclaw.io/manager") with a non-empty value — identifying which CR
+//     kind owns the pod.
+//   - hiclaw.io/controller == controllerName — identifying which controller
+//     instance owns the pod.
+//
+// The controller filter is defense-in-depth against the informer cache label
+// selector configured in app.startInCluster (opts.Cache.ByObject for Pods).
+// If a future watch source is wired without that cache filter, this predicate
+// still prevents cross-instance reconcile when two hiclaw-controller
+// releases share a namespace.
+func podLifecyclePredicates(labelKey, controllerName string) predicate.Predicate {
+	matches := func(obj client.Object) bool {
+		l := obj.GetLabels()
+		return l[labelKey] != "" && l[v1beta1.LabelController] == controllerName
+	}
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			return e.Object.GetLabels()[labelKey] != ""
+			return matches(e.Object)
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			return e.Object.GetLabels()[labelKey] != ""
+			return matches(e.Object)
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			if e.ObjectNew.GetLabels()[labelKey] == "" {
+			if !matches(e.ObjectNew) {
 				return false
 			}
 			oldPod, ok1 := e.ObjectOld.(*corev1.Pod)

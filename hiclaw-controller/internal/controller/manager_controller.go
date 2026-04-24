@@ -46,6 +46,11 @@ type ManagerReconciler struct {
 	// because Backend.Create is shared and cannot tell which env var applies.
 	DefaultRuntime string
 
+	// ControllerName identifies this controller instance. Stamped on every
+	// Manager Pod via hiclaw.io/controller so multi-instance deployments
+	// sharing a namespace do not cross-watch each other's resources.
+	ControllerName string
+
 	// UserLanguage / UserTimezone are install-time hints (HICLAW_LANGUAGE /
 	// TZ) used only to render the first-boot Manager onboarding prompt
 	// in reconcileManagerWelcome. Empty strings fall back to the same
@@ -174,7 +179,7 @@ func (r *ManagerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						}},
 					}
 				}),
-				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/manager")),
+				builder.WithPredicates(podLifecyclePredicates("hiclaw.io/manager", r.ControllerName)),
 			)
 		}
 	}

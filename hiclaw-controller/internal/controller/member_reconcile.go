@@ -371,10 +371,14 @@ func createMemberContainer(ctx context.Context, d MemberDeps, m MemberContext, s
 	mergeUserEnv(workerEnv, m.Spec.Env, logger, string(m.Role)+"/"+m.Name)
 	saName := d.ResourcePrefix.SAName(authpkg.RoleWorker, m.Name)
 
-	labels := make(map[string]string, len(m.PodLabels))
+	// Identity labels: callers own the full label set now that the backend
+	// is stateless (see A7). The backend only stamps hiclaw.io/runtime.
+	labels := make(map[string]string, len(m.PodLabels)+2)
 	for k, v := range m.PodLabels {
 		labels[k] = v
 	}
+	labels["app"] = d.ResourcePrefix.WorkerAppLabel()
+	labels["hiclaw.io/worker"] = m.Name
 
 	createReq := backend.CreateRequest{
 		Name:               m.Name,

@@ -91,6 +91,15 @@ spec:
                         type: string
                       propertyNames:
                         pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: >
+                        User-defined Pod labels stamped onto the team leader Pod.
+                        Merged on top of Team.metadata.labels and below controller
+                        system labels. Entries whose keys collide with system labels
+                        are silently overridden.
                     channelPolicy:
                       type: object
                       properties:
@@ -257,6 +266,15 @@ spec:
                           type: string
                         propertyNames:
                           pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+                      labels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        description: >
+                          User-defined Pod labels stamped onto this team worker Pod.
+                          Merged on top of Team.metadata.labels and below controller
+                          system labels. Entries whose keys collide with system labels
+                          are silently overridden.
             status:
               type: object
               properties:

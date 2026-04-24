@@ -115,25 +115,27 @@ func TestMain(m *testing.M) {
 	})
 
 	workerReconciler := &controller.WorkerReconciler{
-		Client:      mgr.GetClient(),
-		Provisioner: mockProv,
-		Deployer:    mockDeploy,
-		Backend:     workerBackendRegistry,
-		EnvBuilder:  mockEnv,
-		Legacy:      testLegacy,
+		Client:         mgr.GetClient(),
+		Provisioner:    mockProv,
+		Deployer:       mockDeploy,
+		Backend:        workerBackendRegistry,
+		EnvBuilder:     mockEnv,
+		Legacy:         testLegacy,
+		ControllerName: "test-ctl",
 	}
 	if err := workerReconciler.SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup WorkerReconciler: %v", err))
 	}
 
 	teamReconciler := &controller.TeamReconciler{
-		Client:      mgr.GetClient(),
-		Provisioner: mockProv,
-		Deployer:    mockDeploy,
-		Backend:     workerBackendRegistry,
-		EnvBuilder:  mockEnv,
-		Legacy:      testLegacy,
-		AgentFSDir:  agentFSDir,
+		Client:         mgr.GetClient(),
+		Provisioner:    mockProv,
+		Deployer:       mockDeploy,
+		Backend:        workerBackendRegistry,
+		EnvBuilder:     mockEnv,
+		Legacy:         testLegacy,
+		AgentFSDir:     agentFSDir,
+		ControllerName: "test-ctl",
 	}
 	if err := teamReconciler.SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup TeamReconciler: %v", err))
@@ -177,13 +179,14 @@ func TestMain(m *testing.M) {
 	)
 
 	managerReconciler := &controller.ManagerReconciler{
-		Client:       mgr.GetClient(),
-		Provisioner:  mockMgrProv,
-		Deployer:     mockMgrDeploy,
-		Backend:      mgrBackendRegistry,
-		EnvBuilder:   mockMgrEnv,
-		UserLanguage: "en",
-		UserTimezone: "America/Los_Angeles",
+		Client:         mgr.GetClient(),
+		Provisioner:    mockMgrProv,
+		Deployer:       mockMgrDeploy,
+		Backend:        mgrBackendRegistry,
+		EnvBuilder:     mockMgrEnv,
+		ControllerName: "test-ctl",
+		UserLanguage:   "en",
+		UserTimezone:   "America/Los_Angeles",
 	}
 	if err := managerReconciler.SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup ManagerReconciler: %v", err))

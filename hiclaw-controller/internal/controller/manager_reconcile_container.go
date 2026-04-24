@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
 	authpkg "github.com/hiclaw/hiclaw-controller/internal/auth"
 	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/service"
@@ -148,6 +149,10 @@ func (r *ManagerReconciler) createManagerContainer(ctx context.Context, s *manag
 	mergeUserEnv(managerEnv, m.Spec.Env, logger, "manager/"+m.Name)
 	containerName := r.managerContainerName(m.Name)
 	saName := r.ResourcePrefix.SAName(authpkg.RoleManager, m.Name)
+	// Pod labels are layered low-to-high: CR metadata.labels, CR
+	// spec.labels, then controller-forced system labels. The last layer
+	// wins on collision so a user-supplied `hiclaw.io/controller` (or
+	// any other reserved key) cannot spoof the controller identity.
 	createReq := backend.CreateRequest{
 		Name:               m.Name,
 		ContainerName:      containerName,
@@ -157,10 +162,17 @@ func (r *ManagerReconciler) createManagerContainer(ctx context.Context, s *manag
 		Env:                managerEnv,
 		ServiceAccountName: saName,
 		Resources:          r.ManagerResources,
-		Labels: map[string]string{
-			"app":               r.ResourcePrefix.ManagerAppLabel(),
-			"hiclaw.io/manager": m.Name,
-		},
+		Labels: mergeLabels(
+			m.ObjectMeta.Labels,
+			m.Spec.Labels,
+			map[string]string{
+				"app":                   r.ResourcePrefix.ManagerAppLabel(),
+				"hiclaw.io/manager":     m.Name,
+				"hiclaw.io/role":        "manager",
+				"hiclaw.io/runtime":     backend.ResolveRuntime(m.Spec.Runtime, r.DefaultRuntime),
+				v1beta1.LabelController: r.ControllerName,
+			},
+		),
 		Owner: m,
 	}
 	if wb.Name() != "k8s" {
