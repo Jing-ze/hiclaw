@@ -83,6 +83,12 @@ type WorkerSpec struct {
 	// embed WorkerSpec-shaped hashes keep a stable spec hash when the
 	// field is absent.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Env holds user-defined environment variables injected into the worker
+	// container. Keys that collide with variables already set by the
+	// controller or backend (HICLAW_*, OPENCLAW_*, HOME, and similar
+	// internal keys) are silently ignored with a warning log — the system
+	// value always wins.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // DesiredState returns the effective desired state, defaulting to "Running".
@@ -170,19 +176,20 @@ type LeaderSpec struct {
 	WorkerIdleTimeout string                   `json:"workerIdleTimeout,omitempty"`
 	ChannelPolicy     *ChannelPolicySpec       `json:"channelPolicy,omitempty"`
 	State             *string                  `json:"state,omitempty"` // desired lifecycle state: Running, Sleeping, Stopped
-
 	// AccessEntries declares the cloud permissions this leader should be
 	// granted via hiclaw-credential-provider. See AccessEntry for semantics.
 	// When empty the controller applies team-member defaults (agents/<name>/*
 	// + shared/* + teams/<team>/* on the configured bucket).
 	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
-
 	// Labels are user-defined Pod labels stamped onto the leader Pod.
 	// Merged on top of Team.metadata.labels and below controller system
 	// labels (see WorkerSpec.Labels godoc). omitempty preserves
 	// hashMemberSourceSpec stability for Teams that never set this
 	// field.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Env holds user-defined environment variables injected into the
+	// leader container. See WorkerSpec.Env for the collision policy.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 type TeamLeaderHeartbeatSpec struct {
@@ -204,18 +211,19 @@ type TeamWorkerSpec struct {
 	Expose        []ExposePort       `json:"expose,omitempty"`
 	ChannelPolicy *ChannelPolicySpec `json:"channelPolicy,omitempty"`
 	State         *string            `json:"state,omitempty"` // desired lifecycle state: Running, Sleeping, Stopped
-
 	// AccessEntries declares the cloud permissions this team worker should be
 	// granted via hiclaw-credential-provider. See AccessEntry for semantics.
 	// When empty the controller applies team-member defaults (agents/<name>/*
 	// + shared/* + teams/<team>/* on the configured bucket).
 	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
-
 	// Labels are user-defined Pod labels stamped onto this team worker's
 	// Pod. Merged on top of Team.metadata.labels and below controller
 	// system labels (see WorkerSpec.Labels godoc). omitempty preserves
 	// hashMemberSourceSpec stability for existing Teams.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Env holds user-defined environment variables injected into this
+	// team worker's container. See WorkerSpec.Env for the collision policy.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 type TeamStatus struct {
@@ -376,12 +384,14 @@ type ManagerSpec struct {
 	// When empty the controller applies a sensible default (object-storage
 	// scoped to agents/<name>/*, shared/*, and manager/*).
 	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
-
 	// Labels are user-defined Pod labels stamped onto the manager Pod.
 	// Merged under the four-layer priority order (see WorkerSpec.Labels
 	// godoc): pod-template < CR metadata.labels < CR spec.labels <
 	// controller system labels.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Env holds user-defined environment variables injected into the
+	// manager container. See WorkerSpec.Env for the collision policy.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // DesiredState returns the effective desired state, defaulting to "Running".
