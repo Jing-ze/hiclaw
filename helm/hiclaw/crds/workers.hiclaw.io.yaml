@@ -103,8 +103,6 @@ spec:
                     ignored with a warning log — the system value always wins.
                   additionalProperties:
                     type: string
-                  propertyNames:
-                    pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
                 labels:
                   type: object
                   additionalProperties:
