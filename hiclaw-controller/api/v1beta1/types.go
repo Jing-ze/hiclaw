@@ -57,6 +57,7 @@ type MCPServer struct {
 }
 
 // +genclient
+// +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Worker represents an AI agent worker in HiClaw.
@@ -90,6 +91,16 @@ type WorkerSpec struct {
 	// When empty the controller applies a sensible default (object-storage
 	// scoped to agents/<name>/* and shared/*).
 	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
+
+	// Labels are user-defined Pod labels stamped onto the worker Pod.
+	// Merged under the four-layer priority order (see controller docs):
+	// pod-template < CR metadata.labels < CR spec.labels < controller
+	// system labels. Entries whose keys collide with controller-forced
+	// system labels (hiclaw.io/controller, hiclaw.io/worker, etc.) are
+	// silently overridden. Must carry the omitempty tag so Teams that
+	// embed WorkerSpec-shaped hashes keep a stable spec hash when the
+	// field is absent.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // DesiredState returns the effective desired state, defaulting to "Running".
@@ -142,6 +153,7 @@ type WorkerList struct {
 }
 
 // +genclient
+// +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Team represents a group of workers led by a Team Leader.
@@ -177,7 +189,19 @@ type LeaderSpec struct {
 	WorkerIdleTimeout string                   `json:"workerIdleTimeout,omitempty"`
 	ChannelPolicy     *ChannelPolicySpec       `json:"channelPolicy,omitempty"`
 	State             *string                  `json:"state,omitempty"` // desired lifecycle state: Running, Sleeping, Stopped
-	AccessEntries     []AccessEntry            `json:"accessEntries,omitempty"`
+
+	// AccessEntries declares the cloud permissions this leader should be
+	// granted via hiclaw-credential-provider. See AccessEntry for semantics.
+	// When empty the controller applies team-member defaults (agents/<name>/*
+	// + shared/* + teams/<team>/* on the configured bucket).
+	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
+
+	// Labels are user-defined Pod labels stamped onto the leader Pod.
+	// Merged on top of Team.metadata.labels and below controller system
+	// labels (see WorkerSpec.Labels godoc). omitempty preserves
+	// hashMemberSourceSpec stability for Teams that never set this
+	// field.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 type TeamLeaderHeartbeatSpec struct {
@@ -199,7 +223,18 @@ type TeamWorkerSpec struct {
 	Expose        []ExposePort       `json:"expose,omitempty"`
 	ChannelPolicy *ChannelPolicySpec `json:"channelPolicy,omitempty"`
 	State         *string            `json:"state,omitempty"` // desired lifecycle state: Running, Sleeping, Stopped
-	AccessEntries []AccessEntry      `json:"accessEntries,omitempty"`
+
+	// AccessEntries declares the cloud permissions this team worker should be
+	// granted via hiclaw-credential-provider. See AccessEntry for semantics.
+	// When empty the controller applies team-member defaults (agents/<name>/*
+	// + shared/* + teams/<team>/* on the configured bucket).
+	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
+
+	// Labels are user-defined Pod labels stamped onto this team worker's
+	// Pod. Merged on top of Team.metadata.labels and below controller
+	// system labels (see WorkerSpec.Labels godoc). omitempty preserves
+	// hashMemberSourceSpec stability for existing Teams.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 type TeamStatus struct {
@@ -290,6 +325,7 @@ type TeamList struct {
 }
 
 // +genclient
+// +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Human represents a real human user with configurable access permissions.
@@ -327,6 +363,7 @@ type HumanList struct {
 }
 
 // +genclient
+// +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Manager represents the HiClaw Manager Agent — the coordinator that receives
@@ -360,6 +397,12 @@ type ManagerSpec struct {
 	// When empty the controller applies a sensible default (object-storage
 	// scoped to agents/<name>/*, shared/*, and manager/*).
 	AccessEntries []AccessEntry `json:"accessEntries,omitempty"`
+
+	// Labels are user-defined Pod labels stamped onto the manager Pod.
+	// Merged under the four-layer priority order (see WorkerSpec.Labels
+	// godoc): pod-template < CR metadata.labels < CR spec.labels <
+	// controller system labels.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // DesiredState returns the effective desired state, defaulting to "Running".

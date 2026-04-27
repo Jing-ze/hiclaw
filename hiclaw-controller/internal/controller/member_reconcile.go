@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	v1beta1 "github.com/hiclaw/hiclaw-controller/api/v1beta1"
+	"github.com/hiclaw/hiclaw-controller/internal/agentconfig"
 	authpkg "github.com/hiclaw/hiclaw-controller/internal/auth"
 	"github.com/hiclaw/hiclaw-controller/internal/backend"
 	"github.com/hiclaw/hiclaw-controller/internal/service"
@@ -66,6 +67,9 @@ type MemberContext struct {
 	TeamName          string
 	TeamLeaderName    string
 	TeamAdminMatrixID string
+
+	// Heartbeat config from Team CR leader spec (nil for non-leader members)
+	Heartbeat *agentconfig.HeartbeatConfig
 
 	// ExistingMatrixUserID is non-empty when prior provisioning has recorded a
 	// Matrix user; the Infra phase then uses RefreshCredentials instead of
@@ -223,6 +227,7 @@ func ReconcileMemberConfig(ctx context.Context, d MemberDeps, m MemberContext, s
 		MatrixPassword:    state.ProvResult.MatrixPassword,
 		McpServers:        m.Spec.McpServers,
 		TeamAdminMatrixID: m.TeamAdminMatrixID,
+		Heartbeat:         m.Heartbeat,
 		IsUpdate:          m.IsUpdate,
 	}); err != nil {
 		return fmt.Errorf("deploy worker config: %w", err)
@@ -357,10 +362,14 @@ func createMemberContainer(ctx context.Context, d MemberDeps, m MemberContext, s
 	workerEnv := d.EnvBuilder.Build(m.Name, prov)
 	saName := d.ResourcePrefix.SAName(authpkg.RoleWorker, m.Name)
 
-	labels := make(map[string]string, len(m.PodLabels))
+	// Identity labels: callers own the full label set now that the backend
+	// is stateless (see A7). The backend only stamps hiclaw.io/runtime.
+	labels := make(map[string]string, len(m.PodLabels)+2)
 	for k, v := range m.PodLabels {
 		labels[k] = v
 	}
+	labels["app"] = d.ResourcePrefix.WorkerAppLabel()
+	labels["hiclaw.io/worker"] = m.Name
 
 	createReq := backend.CreateRequest{
 		Name:               m.Name,

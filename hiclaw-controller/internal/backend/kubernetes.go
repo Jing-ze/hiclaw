@@ -38,9 +38,9 @@ type K8sConfig struct {
 	ControllerName string
 
 	// ResourcePrefix is the tenant prefix used to derive worker "app" label
-	// values, default SA names, and List selectors. Empty falls back to
-	// "hiclaw-" for tests and out-of-cluster callers. See
-	// internal/auth.ResourcePrefix for semantics.
+	// values and default SA names. Empty falls back to "hiclaw-" for tests
+	// and out-of-cluster callers. See internal/auth.ResourcePrefix for
+	// semantics.
 	ResourcePrefix string
 }
 
@@ -69,7 +69,6 @@ type K8sPodClient interface {
 	Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Pod, error)
 	Create(ctx context.Context, pod *corev1.Pod, opts metav1.CreateOptions) (*corev1.Pod, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
-	List(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error)
 }
 
 // K8sConfigMapClient is the minimal ConfigMap client surface needed by the
@@ -257,26 +256,19 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 		ReadOnly:  true,
 	}
 
-	workerAppLabel := k.workerAppLabel()
-
 	saName := req.ServiceAccountName
 	if saName == "" {
 		saName = k.workerNamePrefix() + req.Name
 	}
 
+	// Callers own the full label set except hiclaw.io/runtime, which the
+	// backend stamps because it knows the resolved runtime value (after
+	// CRD spec + operator-default fallback).
 	podLabels := map[string]string{
 		"hiclaw.io/runtime": defaultRuntime(req.Runtime),
 	}
 	for k, v := range req.Labels {
 		podLabels[k] = v
-	}
-	if podLabels["app"] == "" {
-		podLabels["app"] = workerAppLabel
-	}
-	if _, hasManager := podLabels["hiclaw.io/manager"]; !hasManager {
-		if podLabels["hiclaw.io/worker"] == "" {
-			podLabels["hiclaw.io/worker"] = req.Name
-		}
 	}
 
 	tmpl := LoadAgentPodTemplate(ctx, k.client, k.config.Namespace, k.config.ControllerName)
@@ -285,7 +277,7 @@ func (k *K8sBackend) Create(ctx context.Context, req CreateRequest) (*WorkerResu
 		Name:               podName,
 		Namespace:          k.config.Namespace,
 		Labels:             podLabels,
-		Annotations:        map[string]string{"hiclaw.io/created-by": "controller"},
+		Annotations:        nil,
 		ServiceAccountName: saName,
 		Container:          agentContainer,
 		ResourcesOverride:  resourcesOverride,
@@ -370,31 +362,6 @@ func (k *K8sBackend) Status(ctx context.Context, name string) (*WorkerResult, er
 	}, nil
 }
 
-func (k *K8sBackend) List(ctx context.Context) ([]WorkerResult, error) {
-	pods, err := k.client.Pods(k.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=" + k.workerAppLabel(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("kubernetes list worker pods: %w", err)
-	}
-
-	results := make([]WorkerResult, 0, len(pods.Items))
-	for _, pod := range pods.Items {
-		name := pod.Labels["hiclaw.io/worker"]
-		if name == "" {
-			name = strings.TrimPrefix(pod.Name, k.containerPrefix)
-		}
-		results = append(results, WorkerResult{
-			Name:           name,
-			Backend:        "k8s",
-			DeploymentMode: DeployCloud,
-			Status:         normalizeK8sPodPhase(pod.Status.Phase),
-			RawStatus:      rawK8sPhase(pod.Status.Phase),
-		})
-	}
-	return results, nil
-}
-
 func (k *K8sBackend) podName(prefix, name string) string {
 	if prefix != "" {
 		return prefix + name
@@ -404,16 +371,6 @@ func (k *K8sBackend) podName(prefix, name string) string {
 
 func (k *K8sBackend) workerPodName(name string) string {
 	return k.containerPrefix + name
-}
-
-// workerAppLabel returns the "app" label value used for worker Pod labelling
-// and List selector filtering. Derived from K8sConfig.ResourcePrefix; empty
-// falls back to the baked-in default "hiclaw-worker".
-func (k *K8sBackend) workerAppLabel() string {
-	if k.config.ResourcePrefix == "" {
-		return "hiclaw-worker"
-	}
-	return k.config.ResourcePrefix + "worker"
 }
 
 // workerNamePrefix returns the default worker SA name prefix, e.g.

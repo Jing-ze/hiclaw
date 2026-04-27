@@ -157,8 +157,27 @@ func (g *Generator) GenerateOpenClawConfig(req WorkerConfigRequest) ([]byte, err
 			},
 			"entries": map[string]interface{}{
 				"matrix": map[string]interface{}{"enabled": true},
+				"memory-core": map[string]interface{}{
+					"enabled": true,
+					"config": map[string]interface{}{
+						"dreaming": map[string]interface{}{
+							"enabled": true,
+						},
+					},
+				},
 			},
 		},
+	}
+
+	// Add heartbeat config for team leaders
+	if req.Heartbeat != nil && req.Heartbeat.Enabled {
+		agents := config["agents"].(map[string]interface{})
+		defaults := agents["defaults"].(map[string]interface{})
+		hb := map[string]interface{}{"enabled": true}
+		if req.Heartbeat.Every != "" {
+			hb["every"] = req.Heartbeat.Every
+		}
+		defaults["heartbeat"] = hb
 	}
 
 	// Add embedding model for memory search if configured
@@ -213,6 +232,9 @@ func (g *Generator) buildMatrixChannelConfig(req WorkerConfigRequest, serverURL,
 		"groups": map[string]interface{}{
 			"*": map[string]interface{}{"allow": true, "requireMention": true},
 		},
+		// Matrix plugin: editable preview while the LLM streams; one message per assistant block.
+		"streaming":      "partial",
+		"blockStreaming": true,
 		// openclaw 2026.4.x onwards forwards the SSRF policy to the matrix-js-sdk
 		// fetch path. Without this opt-in, /sync to private hosts (the embedded
 		// `matrix-local.hiclaw.io` alias resolves to 127.0.0.1, k8s service DNS
