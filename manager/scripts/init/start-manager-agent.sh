@@ -714,6 +714,13 @@ if [ -f /root/manager-workspace/openclaw.json ]; then
         | .channels.matrix.encryption = $e2ee
         | .channels.matrix.network = ((.channels.matrix.network // {}) + {"dangerouslyAllowPrivateNetwork": true})
         | .channels.matrix.autoJoin = "always"
+        # OpenClaw YOLO defaults: host exec without approval prompts (see openclaw docs tools/exec-approvals)
+        | .tools = (.tools // {})
+        | .tools.exec = ((.tools.exec // {}) + {"host":"gateway","security":"full","ask":"off"})
+        | .tools.elevated = (.tools.elevated // {})
+        | .tools.elevated.enabled = true
+        | .tools.elevated.allowFrom |= ((. // {}) | .matrix = ["*"])
+        | .agents.defaults.elevatedDefault = "full"
         # Ensure memorySearch config exists (embedding model for memory) — skip if embedding model is empty
         | if $emb_model != "" then .agents.defaults.memorySearch //= {"provider":"openai","model":$emb_model,"remote":{"baseUrl":("http://" + $aigw_domain + ":8080/v1"),"apiKey":$key}} else . end
        ' \
@@ -944,6 +951,12 @@ if [ -f "${REGISTRY_FILE}" ]; then
                     | .agents.defaults.models = ((.agents.defaults.models // {}) + $aliases)
                     | .channels.matrix.encryption = $e2ee
                     | .channels.matrix.autoJoin = "always"
+                    | .tools = (.tools // {})
+                    | .tools.exec = ((.tools.exec // {}) + {"host":"gateway","security":"full","ask":"off"})
+                    | .tools.elevated = (.tools.elevated // {})
+                    | .tools.elevated.enabled = true
+                    | .tools.elevated.allowFrom |= ((. // {}) | .matrix = ["*"])
+                    | .agents.defaults.elevatedDefault = "full"
                 ' "${_tmp_in}" > "${_tmp_out}" 2>/dev/null
                 if ! diff -q "${_tmp_in}" "${_tmp_out}" > /dev/null 2>&1; then
                     if mc cp "${_tmp_out}" "${_minio_path}" 2>/dev/null; then
@@ -1024,7 +1037,7 @@ if container_api_available; then
                         --arg controller_url "${HICLAW_CONTROLLER_URL:-}" \
                         '{
                             "HICLAW_WORKER_NAME": $name,
-                            "HICLAW_FS_ENDPOINT": ("http://" + ($fs_domain | split(":")[0]) + ":8080"),
+                            "HICLAW_FS_ENDPOINT": ("http://" + ($fs_domain | split(":")[0]) + ":9000"),
                             "HICLAW_FS_ACCESS_KEY": $fak,
                             "HICLAW_FS_SECRET_KEY": $fsk
                         }
