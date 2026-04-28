@@ -847,6 +847,7 @@ func leaderWorkerSpec(t *v1beta1.Team) v1beta1.WorkerSpec {
 		Identity:      t.Spec.Leader.Identity,
 		Soul:          t.Spec.Leader.Soul,
 		Agents:        t.Spec.Leader.Agents,
+		McpServers:    t.Spec.Leader.McpServers,
 		Package:       t.Spec.Leader.Package,
 		ChannelPolicy: policy,
 		State:         t.Spec.Leader.State,

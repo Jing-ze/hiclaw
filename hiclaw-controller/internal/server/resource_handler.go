@@ -365,6 +365,7 @@ func (h *ResourceHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 				Soul:              req.Leader.Soul,
 				Agents:            req.Leader.Agents,
 				Package:           req.Leader.Package,
+				McpServers:        req.Leader.McpServers,
 				Heartbeat:         toHeartbeatSpec(req.Leader.Heartbeat),
 				WorkerIdleTimeout: req.Leader.WorkerIdleTimeout,
 				ChannelPolicy:     req.Leader.ChannelPolicy,
@@ -486,6 +487,9 @@ func (h *ResourceHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.Leader.WorkerIdleTimeout != "" {
 				team.Spec.Leader.WorkerIdleTimeout = req.Leader.WorkerIdleTimeout
+			}
+			if req.Leader.McpServers != nil {
+				team.Spec.Leader.McpServers = req.Leader.McpServers
 			}
 			if req.Leader.ChannelPolicy != nil {
 				team.Spec.Leader.ChannelPolicy = req.Leader.ChannelPolicy

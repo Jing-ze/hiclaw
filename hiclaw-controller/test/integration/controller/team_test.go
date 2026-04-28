@@ -711,6 +711,72 @@ func TestTeamUpdate_AddWorker_DoesNotRecreateExisting(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Team — Leader MCP servers propagation
+// ---------------------------------------------------------------------------
+
+func TestTeamCreate_LeaderMcpServers_DeployedToConfig(t *testing.T) {
+	resetMocks()
+
+	name := fixtures.UniqueName("t-lead-mcp")
+	leaderName := name + "-lead"
+	team := fixtures.NewTestTeam(name, leaderName, name+"-dev")
+	team.Spec.Leader.McpServers = []v1beta1.MCPServer{
+		{Name: "github", URL: "https://gw.example.com/mcp-servers/github/mcp"},
+	}
+
+	if err := k8sClient.Create(ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	t.Cleanup(func() { _ = deleteAndWait(t, team) })
+
+	waitForTeamPhase(t, team, "Active")
+
+	assertEventually(t, func() error {
+		for _, req := range mockDeploy.Calls.DeployWorkerConfig {
+			if req.Name != leaderName {
+				continue
+			}
+			if len(req.McpServers) != 1 {
+				continue
+			}
+			if req.McpServers[0].Name == "github" && req.McpServers[0].URL == "https://gw.example.com/mcp-servers/github/mcp" {
+				return nil
+			}
+		}
+		return fmt.Errorf("DeployWorkerConfig not called with leader McpServers (calls=%d)", len(mockDeploy.Calls.DeployWorkerConfig))
+	})
+
+	clearAllCalls()
+
+	assertEventually(t, func() error {
+		var got v1beta1.Team
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
+			return err
+		}
+		got.Spec.Leader.McpServers = []v1beta1.MCPServer{
+			{Name: "github", URL: "https://gw.example.com/mcp-servers/github/mcp"},
+			{Name: "jira", URL: "https://gw.example.com/mcp-servers/jira/mcp", Transport: "sse"},
+		}
+		return k8sClient.Update(ctx, &got)
+	})
+
+	assertEventually(t, func() error {
+		for _, req := range mockDeploy.Calls.DeployWorkerConfig {
+			if req.Name != leaderName {
+				continue
+			}
+			if len(req.McpServers) != 2 {
+				continue
+			}
+			if req.McpServers[0].Name == "github" && req.McpServers[1].Name == "jira" {
+				return nil
+			}
+		}
+		return fmt.Errorf("DeployWorkerConfig not called with updated leader McpServers (calls=%d)", len(mockDeploy.Calls.DeployWorkerConfig))
+	})
+}
+
+// ---------------------------------------------------------------------------
 // CR Labels → Pod Labels propagation (Team)
 // ---------------------------------------------------------------------------
 
@@ -753,8 +819,8 @@ func TestTeamLabels_PropagateAndIsolatePerMember(t *testing.T) {
 		switch team.Spec.Workers[i].Name {
 		case devName:
 			team.Spec.Workers[i].Labels = map[string]string{
-				"skill":            "rust",
-				"hiclaw.io/role":   "evil", // reserved-key override attempt
+				"skill":          "rust",
+				"hiclaw.io/role": "evil", // reserved-key override attempt
 			}
 		case qaName:
 			team.Spec.Workers[i].Labels = map[string]string{

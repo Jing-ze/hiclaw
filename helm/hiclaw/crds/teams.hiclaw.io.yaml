@@ -67,6 +67,22 @@ spec:
                       type: string
                     package:
                       type: string
+                    mcpServers:
+                      type: array
+                      description: MCP servers callable via mcporter. url is the full endpoint; transport defaults to http.
+                      items:
+                        type: object
+                        required: [name, url]
+                        properties:
+                          name:
+                            type: string
+                            description: Key in mcporter-servers.json; used by tool calls as <name>.<tool>.
+                          url:
+                            type: string
+                            description: Full MCP endpoint URL (gateway-side path included).
+                          transport:
+                            type: string
+                            enum: [http, sse]
                     heartbeat:
                       type: object
                       properties:

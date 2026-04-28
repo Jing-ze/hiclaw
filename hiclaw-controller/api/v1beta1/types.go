@@ -185,6 +185,7 @@ type LeaderSpec struct {
 	Soul              string                   `json:"soul,omitempty"`
 	Agents            string                   `json:"agents,omitempty"`
 	Package           string                   `json:"package,omitempty"`
+	McpServers        []MCPServer              `json:"mcpServers,omitempty"`
 	Heartbeat         *TeamLeaderHeartbeatSpec `json:"heartbeat,omitempty"`
 	WorkerIdleTimeout string                   `json:"workerIdleTimeout,omitempty"`
 	ChannelPolicy     *ChannelPolicySpec       `json:"channelPolicy,omitempty"`
