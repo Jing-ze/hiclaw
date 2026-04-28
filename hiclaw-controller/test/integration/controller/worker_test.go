@@ -681,7 +681,7 @@ func TestWorkerUpdate_MCPServersChange_RewritesMcporterJSON(t *testing.T) {
 		if w.Status.ObservedGeneration != w.Generation {
 			return fmt.Errorf("ObservedGeneration=%d, want %d", w.Status.ObservedGeneration, w.Generation)
 		}
-		for _, req := range mockDeploy.Calls.DeployWorkerConfig {
+		for _, req := range mockDeploy.DeployWorkerConfigSnapshot() {
 			if req.Name != workerName {
 				continue
 			}
@@ -699,7 +699,8 @@ func TestWorkerUpdate_MCPServersChange_RewritesMcporterJSON(t *testing.T) {
 				return nil
 			}
 		}
-		return fmt.Errorf("DeployWorkerConfig not called with updated McpServers=%v (calls=%d)", expectedServers, len(mockDeploy.Calls.DeployWorkerConfig))
+		snap := mockDeploy.DeployWorkerConfigSnapshot()
+		return fmt.Errorf("DeployWorkerConfig not called with updated McpServers=%v (calls=%d)", expectedServers, len(snap))
 	})
 }
 
@@ -751,12 +752,12 @@ func TestWorkerLabels_PropagateFromMetadataAndSpecToBackendCreate(t *testing.T) 
 		t.Fatalf("backend Create was never called for %q (captured=%v)", name, capMu.Keys())
 	}
 
-	assertLabel(t, labels, "owner", "alice")                   // metadata propagated
-	assertLabel(t, labels, "env", "prod")                      // spec propagated
-	assertLabel(t, labels, "team", "spec-team")                // spec beats metadata
-	assertLabel(t, labels, v1beta1.LabelController, wantCtl)   // system beats user
-	assertLabel(t, labels, "hiclaw.io/worker", name)           // system beats user
-	assertLabel(t, labels, "hiclaw.io/role", "standalone")     // system
+	assertLabel(t, labels, "owner", "alice")                 // metadata propagated
+	assertLabel(t, labels, "env", "prod")                    // spec propagated
+	assertLabel(t, labels, "team", "spec-team")              // spec beats metadata
+	assertLabel(t, labels, v1beta1.LabelController, wantCtl) // system beats user
+	assertLabel(t, labels, "hiclaw.io/worker", name)         // system beats user
+	assertLabel(t, labels, "hiclaw.io/role", "standalone")   // system
 }
 
 // TestWorkerLabels_MetadataLabelsChangeDoesNotRecreatePod verifies the

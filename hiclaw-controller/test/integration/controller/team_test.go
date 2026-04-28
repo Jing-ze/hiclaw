@@ -732,7 +732,7 @@ func TestTeamCreate_LeaderMcpServers_DeployedToConfig(t *testing.T) {
 	waitForTeamPhase(t, team, "Active")
 
 	assertEventually(t, func() error {
-		for _, req := range mockDeploy.Calls.DeployWorkerConfig {
+		for _, req := range mockDeploy.DeployWorkerConfigSnapshot() {
 			if req.Name != leaderName {
 				continue
 			}
@@ -743,25 +743,21 @@ func TestTeamCreate_LeaderMcpServers_DeployedToConfig(t *testing.T) {
 				return nil
 			}
 		}
-		return fmt.Errorf("DeployWorkerConfig not called with leader McpServers (calls=%d)", len(mockDeploy.Calls.DeployWorkerConfig))
+		snap := mockDeploy.DeployWorkerConfigSnapshot()
+		return fmt.Errorf("DeployWorkerConfig not called with leader McpServers (calls=%d)", len(snap))
 	})
 
 	clearAllCalls()
 
-	assertEventually(t, func() error {
-		var got v1beta1.Team
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(team), &got); err != nil {
-			return err
-		}
-		got.Spec.Leader.McpServers = []v1beta1.MCPServer{
+	updateTeamSpec(t, team, func(tt *v1beta1.Team) {
+		tt.Spec.Leader.McpServers = []v1beta1.MCPServer{
 			{Name: "github", URL: "https://gw.example.com/mcp-servers/github/mcp"},
 			{Name: "jira", URL: "https://gw.example.com/mcp-servers/jira/mcp", Transport: "sse"},
 		}
-		return k8sClient.Update(ctx, &got)
 	})
 
 	assertEventually(t, func() error {
-		for _, req := range mockDeploy.Calls.DeployWorkerConfig {
+		for _, req := range mockDeploy.DeployWorkerConfigSnapshot() {
 			if req.Name != leaderName {
 				continue
 			}
@@ -772,7 +768,8 @@ func TestTeamCreate_LeaderMcpServers_DeployedToConfig(t *testing.T) {
 				return nil
 			}
 		}
-		return fmt.Errorf("DeployWorkerConfig not called with updated leader McpServers (calls=%d)", len(mockDeploy.Calls.DeployWorkerConfig))
+		snap := mockDeploy.DeployWorkerConfigSnapshot()
+		return fmt.Errorf("DeployWorkerConfig not called with updated leader McpServers (calls=%d)", len(snap))
 	})
 }
 
