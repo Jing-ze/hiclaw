@@ -51,12 +51,12 @@ Starting from v1.1.0, HiClaw switched from a **single all-in-one container** to 
 | Infrastructure (Higress, Tuwunel, MinIO, Element Web) | Bundled inside `hiclaw-manager` | Runs in `hiclaw-controller` container (from the `hiclaw-embedded` image) |
 | Manager Agent | Inside `hiclaw-manager` | Separate `hiclaw-manager` container (lightweight, agent only) |
 | Worker management | Shell scripts (`create-worker.sh`) + `workers-registry.json` | Declarative CRDs via `hiclaw` CLI (`hiclaw create worker`, `hiclaw apply`) |
-| Worker runtimes | OpenClaw only | OpenClaw, **CoPaw** (Python), or Hermes |
+| Worker runtimes | OpenClaw only | OpenClaw, **QwenPaw** (Python; formerly **CoPaw**), or Hermes |
 
 **Key benefits:**
 - The Manager image is ~1.7 GB smaller (no longer ships Higress binaries)
 - Workers are managed declaratively — define YAML, apply, done
-- Three worker runtime choices: OpenClaw (Node.js), CoPaw (Python; older docs may say **QwenPaw**), Hermes
+- Three worker runtime choices: OpenClaw (Node.js), QwenPaw (Python; formerly **CoPaw**), Hermes
 - Team support with Team Leader DAG orchestration
 - Worker Template Marketplace for one-click Worker provisioning
 
@@ -406,7 +406,7 @@ HiClaw v1.1.0+ supports three Worker runtimes:
 | Runtime | Language | Best For |
 |---------|----------|----------|
 | OpenClaw | Node.js | General-purpose, mature ecosystem |
-| CoPaw | Python | Python-native workflows, data science (legacy name **QwenPaw**) |
+| QwenPaw | Python | Python-native workflows, data science (legacy name **CoPaw**) |
 | Hermes | Python | Autonomous coding, development tasks |
 
 ### At creation time
@@ -661,7 +661,7 @@ HiClaw uses OpenClaw with the Matrix channel (Element Web). OpenClaw supports **
 
 **In group rooms:** You can combine an @mention with a slash command in the same message, e.g. `@Worker /compact` or `@Worker /new`. The @mention ensures the command reaches the right agent, and the slash command is still processed by the Gateway as usual.
 
-The following commands apply to OpenClaw (Manager and OpenClaw Workers). **CoPaw** Workers use a different command set — see [CoPaw Commands](https://copaw.agentscope.io/docs/commands) for details.
+The following commands apply to OpenClaw (Manager and OpenClaw Workers). **QwenPaw** Workers use a different command set — see [QwenPaw Commands](https://copaw.agentscope.io/docs/commands) for details.
 
 ### Session reset and compaction
 
